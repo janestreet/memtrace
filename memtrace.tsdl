@@ -69,7 +69,7 @@ event {
   stream_id = 0;
   fields := struct {
     uint64_t code;
-    uint32_t nlocs;
+    uint8_t nlocs;
     location locs[nlocs];
   };
 };

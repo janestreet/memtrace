@@ -197,7 +197,6 @@ let get_event_header b =
 
 let max_location = 4 * 1024
 let put_backtrace_slot b (id, loc) =
-  (* FIXME: are these in the right order? Should be caller-first *)
   let open Printexc in
   let rec get_locations slot =
     let tail =
@@ -208,10 +207,16 @@ let put_backtrace_slot b (id, loc) =
     match Slot.location slot with
     | None -> tail
     | Some l -> l :: tail in
-  (* FIXME overflow *)
-  let locs = get_locations loc in
+  let locs = get_locations loc |> List.rev in
+  let max_locs = 255 in
+  let locs =
+    if List.length locs <= max_locs then locs else
+      ((List.filteri (fun i _ -> i < max_locs - 1) locs)
+       @
+      [ { filename = "<unknown>"; line_number = 1; start_char = 1; end_char = 1 } ]) in
+  assert (List.length locs <= max_locs);
   put_64 b (Int64.of_int id);
-  put_32 b (Int32.of_int (List.length locs));
+  put_8 b (List.length locs);
   locs |> List.iter (fun (loc : location) ->
     put_32 b (Int32.of_int loc.line_number);
     put_32 b (Int32.of_int loc.start_char);
@@ -220,7 +225,7 @@ let put_backtrace_slot b (id, loc) =
 
 let get_backtrace_slot b =
   let id = Int64.to_int (get_64 b) in
-  let nlocs = Int32.to_int (get_32 b) in
+  let nlocs = get_8 b in
   let locs = List.init nlocs (fun _ ->
     let line = Int32.to_int (get_32 b) in
     let start_char = Int32.to_int (get_32 b) in
@@ -543,11 +548,14 @@ let parse_trace filename loc_table f =
   Unix.close fd
 
 
+let[@inline always] beep i = ((i * 483205) land 0xfffff, i)
+let[@inline always] mul i = let m = beep i in assert (i >= 0); m
+
 let write () =
   let out = Unix.openfile "memtrace.ctf" [Unix.O_CREAT;Unix.O_WRONLY;Unix.O_TRUNC] 0o600 in
   let s = start_memprof out 0.001 in
   let module S = Set.Make (struct type t = (int * int) option let compare = compare end) in
-  List.init 10_000 (fun i -> Some ((i * 483205) land 0xfffff, i))
+  List.init 10_000 (fun i -> Some (if i < -100 then assert false else mul i))
   |> List.map S.singleton
   |> List.fold_left S.union S.empty
   |> Sys.opaque_identity
