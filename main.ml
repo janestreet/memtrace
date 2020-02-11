@@ -102,8 +102,10 @@ let create_reader_cache () =
   { cache_loc = Array.make cache_size 0;
     cache_pred = Array.make cache_size 0 }
 
+type mtf_table = string array
 type memtrace_writer = {
   dest : Unix.file_descr;
+  file_mtf : mtf_table;
   mutable new_locs : (int * Printexc.raw_backtrace_slot) array;
   mutable new_locs_len : int;
   new_locs_buf : Bytes.t;
@@ -195,8 +197,45 @@ let get_event_header b =
   let time = get_timestamp b in
   (ev, time)
 
+let mtf_length = 15
+let create_mtf_table () =
+  Array.init mtf_length (fun i -> "??"^string_of_int i) (* must be distinct *)
+let mtf_encode mtf filename =
+  let rec insert mtf prev filename i =
+    if i = mtf_length then
+      (* not found *)
+      i
+    else begin
+      let curr = mtf.(i) in
+      mtf.(i) <- prev;
+      if String.equal curr filename then
+        i
+      else
+        insert mtf curr filename (i+1)
+    end in
+  if String.equal mtf.(0) filename then
+    0
+  else
+    let prev = mtf.(0) in
+    mtf.(0) <- filename;
+    insert mtf prev filename 1
+let mtf_decode mtf i =
+  assert (i < mtf_length);
+  if i = 0 then
+    mtf.(0)
+  else begin
+    let f = mtf.(i) in
+    Array.blit mtf 0 mtf 1 i;
+    mtf.(0) <- f;
+    f
+  end
+let mtf_new mtf filename =
+  Array.blit mtf 0 mtf 1 (mtf_length - 1);
+  mtf.(0) <- filename
+
+(* FIXME: max_location overflow *)
 let max_location = 4 * 1024
-let put_backtrace_slot b (id, loc) =
+let put_backtrace_slot b file_mtf (id, loc) =
   let open Printexc in
   let rec get_locations slot =
     let tail =
@@ -218,19 +257,33 @@ let put_backtrace_slot b (id, loc) =
   put_64 b (Int64.of_int id);
   put_8 b (List.length locs);
   locs |> List.iter (fun (loc : location) ->
-    put_32 b (Int32.of_int loc.line_number);
-    put_32 b (Int32.of_int loc.start_char);
-    put_32 b (Int32.of_int loc.end_char);
-    put_string b loc.filename)
+    let clamp n lim = if n < 0 || n > lim then lim else n in
+    let line_number = clamp loc.line_number 0xfffff in
+    let start_char = clamp loc.start_char 0xfff in
+    let end_char = clamp loc.end_char 0xfff in
+    let filename_code = mtf_encode file_mtf loc.filename in
+    put_32 b (Int32.(logor (of_int line_number) (shift_left (of_int start_char) 20)));
+    put_16 b (end_char lor (filename_code lsl 12));
+    if filename_code = mtf_length then
+      put_string b loc.filename)
 
-let get_backtrace_slot b =
+let get_backtrace_slot file_mtf b =
   let id = Int64.to_int (get_64 b) in
   let nlocs = get_8 b in
   let locs = List.init nlocs (fun _ ->
-    let line = Int32.to_int (get_32 b) in
-    let start_char = Int32.to_int (get_32 b) in
-    let end_char = Int32.to_int (get_32 b) in
-    let filename = get_string b in
+    let line, start_char =
+      let n = get_32 b in
+      Int32.(to_int (logand n 0xfffffl), to_int (shift_right n 20)) in
+    let end_char, filename_code =
+      let n = get_16 b in
+      n land 0xfff, n lsr 12 in
+    let filename =
+      match filename_code with
+      | n when n = mtf_length ->
+        let s = get_string b in
+        mtf_new file_mtf s;
+        s
+      | n -> mtf_decode file_mtf n in
     { line; start_char; end_char; filename }) in
   (id, locs)
 
@@ -243,7 +296,7 @@ let flush s =
     put_ctf_header b 0 0. 0.;
     while !i < s.new_locs_len && remaining b > max_location do
       put_event_header b Ev_location s.packet_times.t_start;
-      put_backtrace_slot b s.new_locs.(!i);
+      put_backtrace_slot b s.file_mtf s.new_locs.(!i);
       incr i
     done;
     let blen = b.pos in
@@ -460,6 +513,7 @@ let start_memprof dest sampling_rate =
   let now = Unix.gettimeofday () in
   let s = {
     dest;
+    file_mtf = create_mtf_table ();
     new_locs = [| |];
     new_locs_len = 0;
     (* FIXME magic size *)
@@ -491,13 +545,13 @@ let stop_memprof s =
   Gc.Memprof.stop ();
   flush s
 
-let parse_packet_events loc_table cache b f =
+let parse_packet_events file_mtf loc_table cache b f =
   while remaining b > 0 do
     let last_pos = b.pos in
     let (ev, time) = get_event_header b in
     begin match ev with
     | Ev_location ->
-      let (id, loc) = get_backtrace_slot b in
+      let (id, loc) = get_backtrace_slot file_mtf b in
       if Hashtbl.mem loc_table id then
         (if Hashtbl.find loc_table id <> loc then
            bad_format "Inconsistent data for location")
@@ -513,11 +567,12 @@ let parse_packet_events loc_table cache b f =
       let info = get_promote b in
       f info
     end;
-    Printf.printf "sz %d " (b.pos - last_pos)
+    (*Printf.printf "sz %d " (b.pos - last_pos)*)
   done
 
 let parse_trace filename loc_table f =
   let cache = create_reader_cache () in
+  let file_mtf = create_mtf_table () in
   let fd = Unix.openfile filename [Unix.O_RDONLY] 0 in
   (* FIXME error handling *)
   let buf = Bytes.make 1_000_000 '\000' in
@@ -542,7 +597,7 @@ let parse_trace filename loc_table f =
     if remaining b = 0 then () else
     let len = get_ctf_header b in
     let b = if remaining b < len then refill b else b in
-    parse_packet_events loc_table cache { b with pos_end = b.pos + len } f;
+    parse_packet_events file_mtf loc_table cache { b with pos_end = b.pos + len } f;
     go { b with pos = b.pos + len } in
   go { buf; pos = 0; pos_end = 0 };
   Unix.close fd

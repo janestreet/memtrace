@@ -57,10 +57,15 @@ stream {
 };
 
 typealias struct {
-  uint32_t line;
-  uint32_t start_char;
-  uint32_t end_char;
-  string filename;
+  integer {size=20; align=1; signed=false;} line;
+  integer {size=12; align=1; signed=false;} start_char;
+  integer {size=12; align=1; signed=false;} end_char;
+  enum : integer {size=4; align=1; signed=false;}
+    { mtf = 0...14, newname = 15 } filename;
+  variant <filename> {
+    struct {} mtf;
+    string newname;
+  } opt_filename;
 } := location;
 
 event {
