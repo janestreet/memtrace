@@ -1,0 +1,116 @@
+/* CTF 1.8 */
+
+typealias integer {size = 8;}  := uint8_t;
+typealias integer {size = 16;} := uint16_t;
+typealias integer {size = 32;} := uint32_t;
+typealias integer {size = 64;} := uint64_t;
+typealias integer {size = 8; signed = true;}  := int8_t;
+typealias integer {size = 16; signed = true;} := int16_t;
+typealias integer {size = 32; signed = true;} := int32_t;
+
+typealias floating_point {
+    exp_dig = 8;
+    mant_dig = 24;
+    align = 32;
+} := float;
+
+typealias floating_point {
+    exp_dig = 11;
+    mant_dig = 53;
+    align = 64;
+} := double;
+
+
+clock {
+  name = clk;
+  freq = 1000000; /* microsecs */
+  offset_s = 0;
+};
+
+typealias integer {
+  size = 64;
+  map = clock.clk.value;
+} := clk_t;
+
+trace {
+  major = 1;
+  minor = 8;
+  byte_order = le;
+  packet.header := struct {
+    uint32_t magic;
+    /* Support multiple streams? */
+    /* mention trace UUID? */
+  };
+};
+
+stream {
+  packet.context := struct {
+    uint32_t packet_size;
+    uint32_t content_size;
+    clk_t timestamp_begin;
+    clk_t timestamp_end;
+  };
+  event.header := struct {
+    uint8_t id;
+    clk_t timestamp;
+  };
+};
+
+typealias struct {
+  uint32_t line;
+  uint32_t start_char;
+  uint32_t end_char;
+  string filename;
+} := location;
+
+event {
+  id = 0;
+  name = "location";
+  stream_id = 0;
+  fields := struct {
+    uint64_t code;
+    uint32_t nlocs;
+    location locs[nlocs];
+  };
+};
+
+typealias struct {
+  enum : integer {size=1; align=1; signed=false;} { hit = 0, miss = 1 } tag;
+  integer {size=15; align=1; signed=false;} cache_bucket;
+  variant <tag> {
+    uint64_t miss;
+    uint8_t hit;
+  } v;
+} := backtrace_code;
+
+event {
+  id = 1;
+  name = "alloc";
+  stream_id = 0;
+  fields := struct {
+    /* FIXME: could be much more compact */
+    uint64_t obj_id;
+    uint32_t samples;
+    uint8_t is_major;
+    uint32_t common_prefix; /* number of slots shared by previous alloc */
+    uint32_t new_suffix; /* number of new slots */
+    backtrace_code backtrace[new_suffix];
+  };
+};
+
+event {
+  id = 2;
+  name = "promote";
+  fields := struct {
+    uint64_t obj_id;
+  };
+};
+
+event {
+  id = 3;
+  name = "collect";
+  fields := struct {
+    uint64_t obj_id;
+  };
+};
+
