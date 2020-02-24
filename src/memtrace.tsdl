@@ -1,21 +1,23 @@
 /* CTF 1.8 */
 
-typealias integer {size = 8;}  := uint8_t;
-typealias integer {size = 16;} := uint16_t;
-typealias integer {size = 32;} := uint32_t;
-typealias integer {size = 64;} := uint64_t;
-typealias integer {size = 8; signed = true;}  := int8_t;
-typealias integer {size = 16; signed = true;} := int16_t;
-typealias integer {size = 32; signed = true;} := int32_t;
+typealias integer {size = 8;}  := uint8;
+typealias integer {size = 16;} := uint16;
+typealias integer {size = 32;} := uint32;
+typealias integer {size = 64;} := uint64;
+typealias integer {size = 8; signed = true;}  := int8;
+typealias integer {size = 16; signed = true;} := int16;
+typealias integer {size = 32; signed = true;} := int32;
+typealias floating_point {exp_dig = 11;mant_dig = 53;align = 8;} := float64;
+
 
 typealias struct {
-  enum : uint8_t
+  enum : uint8
     { u8 = 0...252, u16 = 253, u32 = 254, u64 = 255 } tag;
   variant <tag> {
     struct {} u8;
-    uint16_t u16;
-    uint32_t u32;
-    uint64_t u64;
+    uint16 u16;
+    uint32 u32;
+    uint64 u64;
   } value;
 } := vint;
 
@@ -35,7 +37,7 @@ trace {
   minor = 8;
   byte_order = le;
   packet.header := struct {
-    uint32_t magic;
+    uint32 magic;
     /* Support multiple streams? */
     /* mention trace UUID? */
   };
@@ -43,12 +45,16 @@ trace {
 
 stream {
   packet.context := struct {
-    uint32_t packet_size;
-    uint32_t content_size;
+    uint32 packet_size;
+    uint32 content_size;
     clk64 timestamp_begin;
     clk64 timestamp_end;
-    uint64_t alloc_id_begin;
-    uint64_t alloc_id_end;
+    uint64 alloc_id_begin;
+    uint64 alloc_id_end;
+    float64 sample_rate;
+    string executable_name;
+    string host_name;
+    uint32 pid;
   };
   event.header := struct {
     integer {size=25; align=1; signed=false; map=clock.clk.value;} timestamp;
@@ -73,8 +79,8 @@ event {
   name = "location";
   stream_id = 0;
   fields := struct {
-    uint64_t code;
-    uint8_t nlocs;
+    uint64 code;
+    uint8 nlocs;
     location locs[nlocs];
   };
 };
@@ -83,8 +89,8 @@ typealias struct {
   enum : integer {size=1; align=1; signed=false;} { hit = 0, miss = 1 } tag;
   integer {size=15; align=1; signed=false;} cache_bucket;
   variant <tag> {
-    uint64_t miss;
-    uint8_t hit;
+    uint64 miss;
+    uint8 hit;
   } v;
 } := backtrace_code;
 
@@ -95,9 +101,9 @@ event {
   fields := struct {
     vint length;
     vint samples;
-    uint8_t is_major;
+    uint8 is_major;
     vint common_prefix; /* number of slots shared by previous alloc */
-    uint16_t new_suffix; /* number of new slots */
+    uint16 new_suffix; /* number of new slots */
     backtrace_code backtrace[new_suffix];
   };
 };

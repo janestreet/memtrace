@@ -1,0 +1,14 @@
+(library
+ (name memtrace)
+ (modules memtrace)
+ (libraries unix))
+
+(executable
+  (name flamegraph)
+  (modules flamegraph)
+  (libraries memtrace))
+
+(executable
+  (name lists_and_sets)
+  (modules lists_and_sets)
+  (libraries memtrace))

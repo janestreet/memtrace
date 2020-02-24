@@ -31,6 +31,13 @@ external bswap_64 : int64 -> int64 = "%bswap_int64"
 
 exception Gen_error of [`Overflow of int]
 exception Parse_error of [`Underflow of int | `Bad_format of string]
+let () =
+  Printexc.register_printer (function
+    | Parse_error (`Bad_format s) ->
+      Some ("malformed trace: " ^ s)
+    | Parse_error (`Underflow s) ->
+      Some ("malformed trace: underflow at pos " ^ string_of_int s)
+    | _ -> None)
 
 let[@inline never] overflow b = raise (Gen_error (`Overflow b.pos))
 let[@inline never] underflow b = raise (Parse_error (`Underflow b.pos))
@@ -80,6 +87,8 @@ let put_string b s =
   Bytes.blit_string s 0 b.buf b.pos slen;
   Bytes.unsafe_set b.buf (b.pos + slen) '\000';
   b.pos <- b.pos + slen + 1
+let put_float b f =
+  put_64 b (Int64.bits_of_float f)
 
 let get_8 b =
   if b.pos + 1 > b.pos_end then underflow b;
@@ -113,6 +122,8 @@ let get_string b =
   while get_8 b <> 0 do () done;
   let len = b.pos - 1 - start in
   Bytes.sub_string b.buf start len
+let get_float b =
+  Int64.float_of_bits (get_64 b)
 
 
 
@@ -122,17 +133,27 @@ let cache_size = 1 lsl 15
 type cache_bucket = int  (* 0 to cache_size - 1 *)
 
 type memtrace_reader_cache = {
-  cache_loc : int array;
+  cache_loc : Int64.t array;
   cache_pred : int array;
 }
 
 let create_reader_cache () =
-  { cache_loc = Array.make cache_size 0;
+  { cache_loc = Array.make cache_size 0L;
     cache_pred = Array.make cache_size 0 }
 
 type mtf_table = string array
-type memtrace_writer = {
+
+type trace_info = {
+  sample_rate : float;
+  executable_name : string;
+  host_name : string;
+  start_time : float;
+  pid : int
+}
+
+type tracer = {
   dest : Unix.file_descr;
+  trace_info : trace_info;
   file_mtf : mtf_table;
   mutable new_locs : (int * Printexc.raw_backtrace_slot) array;
   mutable new_locs_len : int;
@@ -152,13 +173,8 @@ type memtrace_writer = {
   mutable next_alloc_id : int;
   mutable packet_times : times;
   mutable packet : buffer;
-}
 
-type location = {
-  filename : string;
-  line : int;
-  start_char : int;
-  end_char : int;
+  mutable stopped : bool;
 }
 
 let log_new_loc s loc =
@@ -179,21 +195,21 @@ let to_timestamp_64 t =
   t *. 1_000_000. |> Float.to_int |> Int64.of_int
 let of_timestamp_64 n =
   Float.of_int (Int64.to_int n) /. 1_000_000.
-let put_timestamp b t =
-  put_64 b (to_timestamp_64 t)
-let get_timestamp b =
-  of_timestamp_64 (get_64 b)
 
 
-let put_ctf_header b size tstart tend alloc_id_begin alloc_id_end =
+let put_ctf_header b info size tstart tend alloc_id_begin alloc_id_end =
   put_32 b 0xc1fc1fc1l;
   (* CTF sizes are in bits *)
   put_32 b (Int32.mul (Int32.of_int size) 8l);
   put_32 b (Int32.mul (Int32.of_int size) 8l);
-  put_timestamp b tstart;
-  put_timestamp b tend;
+  put_64 b (to_timestamp_64 tstart);
+  put_64 b (to_timestamp_64 tend);
   put_64 b (Int64.of_int alloc_id_begin);
-  put_64 b (Int64.of_int alloc_id_end)
+  put_64 b (Int64.of_int alloc_id_end);
+  put_float b info.sample_rate;
+  put_string b info.executable_name;
+  put_string b info.host_name;
+  put_32 b (Int32.of_int info.pid)
 
 type header_info = {
   content_size: int; (* bytes, excluding header *)
@@ -201,6 +217,10 @@ type header_info = {
   time_end : Int64.t;
   alloc_id_begin : Int64.t;
   alloc_id_end : Int64.t;
+  sample_rate : float;
+  executable_name : string;
+  host_name : string;
+  pid : Int32.t
 }
 let get_ctf_header b =
   let start = b.pos in
@@ -211,6 +231,10 @@ let get_ctf_header b =
   let time_end = get_64 b in
   let alloc_id_begin = get_64 b in
   let alloc_id_end = get_64 b in
+  let sample_rate = get_float b in
+  let executable_name = get_string b in
+  let host_name = get_string b in
+  let pid = get_32 b in
   check_fmt "Not a CTF packet" (magic = 0xc1fc1fc1l);
   check_fmt "Bad packet size" (packet_size >= 0l);
   check_fmt "Bad content size" (content_size = packet_size);
@@ -222,7 +246,11 @@ let get_ctf_header b =
     time_begin;
     time_end;
     alloc_id_begin;
-    alloc_id_end
+    alloc_id_end;
+    sample_rate;
+    executable_name;
+    host_name;
+    pid;
   }
 
 
@@ -304,6 +332,13 @@ let mtf_new mtf filename =
   Array.blit mtf 0 mtf 1 (mtf_length - 1);
   mtf.(0) <- filename
 
+type location = {
+  filename : string;
+  line : int;
+  start_char : int;
+  end_char : int;
+}
+
 (* FIXME: max_location overflow *)
 let max_location = 4 * 1024
 let put_backtrace_slot b file_mtf (id, loc) =
@@ -339,7 +374,7 @@ let put_backtrace_slot b file_mtf (id, loc) =
       put_string b loc.filename)
 
 let get_backtrace_slot file_mtf b =
-  let id = Int64.to_int (get_64 b) in
+  let id = get_64 b in
   let nlocs = get_8 b in
   let locs = List.init nlocs (fun _ ->
     let line, start_char =
@@ -364,7 +399,7 @@ let flush s =
   let i = ref 0 in
   while !i < s.new_locs_len do
     let b = mkbuffer s.new_locs_buf in
-    put_ctf_header b 0 0. 0. 0 0;
+    put_ctf_header b s.trace_info 0 0. 0. 0 0;
     while !i < s.new_locs_len && remaining b > max_location do
       put_event_header b Ev_location s.packet_times.t_start;
       put_backtrace_slot b s.file_mtf s.new_locs.(!i);
@@ -373,6 +408,7 @@ let flush s =
     let blen = b.pos in
     put_ctf_header
       (mkbuffer s.new_locs_buf)
+      s.trace_info
       blen
       s.packet_times.t_start
       s.packet_times.t_start
@@ -384,6 +420,7 @@ let flush s =
   let evlen = s.packet.pos in
   put_ctf_header
     (mkbuffer s.packet.buf)
+    s.trace_info
     evlen
     s.packet_times.t_start
     s.packet_times.t_end
@@ -395,7 +432,7 @@ let flush s =
   s.new_locs_len <- 0;
   s.packet <- mkbuffer s.packet.buf;
   s.start_alloc_id <- s.next_alloc_id;
-  put_ctf_header s.packet 0 0. 0. 0 0
+  put_ctf_header s.packet s.trace_info 0 0. 0. 0 0
 
 let max_ev_size = 4096  (* FIXME arbitrary number, overflow *)
 
@@ -419,7 +456,7 @@ let get_coded_backtrace { cache_loc ; cache_pred } b =
         predict bucket (cache_loc.(bucket) :: acc) (i - 1) ncorrect
       end else begin
         (* cache miss *)
-        let lit = Int64.to_int (get_64 b) in
+        let lit = get_64 b in
         cache_loc.(bucket) <- lit;
         decode bucket (lit :: acc) (i - 1)
       end
@@ -532,44 +569,20 @@ let log_alloc s is_major (info : Gc.Memprof.allocation) =
      let b' = { buf = b.buf; pos = bt_off; pos_end = b.pos } in
      let decoded_suff = get_coded_backtrace c b' in
      assert (remaining b' = 0);
+     let last = Array.map Int64.of_int last in
      let common_pref =
        Array.sub last (Array.length last - common_pfx_len) common_pfx_len |> Array.to_list |> List.rev in
      let decoded = common_pref @ decoded_suff in
-     if decoded <> (raw_stack |> Array.to_list |> List.rev) then begin
-     last |> Array.to_list |> List.rev |> List.iter (Printf.printf " %08x"); Printf.printf "\n";
+     if decoded <> (raw_stack |> Array.map Int64.of_int |> Array.to_list |> List.rev) then begin
+     last |> Array.to_list |> List.rev |> List.iter (Printf.printf " %08Lx"); Printf.printf "\n";
      raw_stack |> Array.to_list |> List.rev |> List.iter (Printf.printf " %08x"); Printf.printf "\n";
-     decoded |> List.iter (Printf.printf " %08x"); Printf.printf " !\n";
+     decoded |> List.iter (Printf.printf " %08Lx"); Printf.printf " !\n";
      List.init common_pfx_len (fun _ -> ".") |> List.iter (Printf.printf " %8s");
-        decoded_suff |> List.iter (Printf.printf " %08x"); Printf.printf "\n%!";
+        decoded_suff |> List.iter (Printf.printf " %08Lx"); Printf.printf "\n%!";
      failwith "bad coded backtrace"
      end);
 
   Some id
-
-type obj_id = int
-type loc_id = int
-
-type event =
-  | Alloc of {
-    obj_id : obj_id;
-    length : int;
-    nsamples : int;
-    is_major : bool;
-    common_prefix : int;
-    new_suffix : loc_id list;
-  }
-  | Promote of obj_id
-  | Collect of obj_id
-
-let get_alloc cache alloc_id b =
-  let length = get_vint b in
-  let nsamples = get_vint b in
-  let is_major = get_8 b |> function 0 -> false | _ -> true in
-  let common_prefix = get_vint b in
-  let new_suffix = get_coded_backtrace cache b in
-  Alloc { obj_id = alloc_id; length; nsamples; is_major; common_prefix; new_suffix }
-
-(* FIXME: overflow, failure to bump end time *)
 
 let log_promote s id =
   begin_event s Ev_promote;
@@ -577,27 +590,25 @@ let log_promote s id =
   let b = s.packet in
   put_vint b (s.next_alloc_id - 1 - id);
   Some id
-let get_promote alloc_id b =
-  let id_delta = get_vint b in
-  check_fmt "promote id sync" (id_delta >= 0);
-  let id = alloc_id - 1 - id_delta in
-  Promote id
 
 let log_collect s id =
   begin_event s Ev_collect;
   assert (id < s.next_alloc_id);
   let b = s.packet in
   put_vint b (s.next_alloc_id - 1 - id)
-let get_collect alloc_id b =
-  let id_delta = get_vint b in
-  check_fmt "collect id sync" (id_delta >= 0);
-  let id = alloc_id - 1 - id_delta in
-  Collect id
 
-let start_memprof dest sampling_rate =
+let start_tracing ~sampling_rate ~filename =
+  let dest = Unix.openfile filename Unix.[O_CREAT;O_WRONLY;O_TRUNC] 0o600 in
   let now = Unix.gettimeofday () in
   let s = {
     dest;
+    trace_info = {
+      sample_rate = sampling_rate;
+      executable_name = Sys.executable_name;
+      host_name = Unix.gethostname ();
+      pid = Unix.getpid ();
+      start_time = now
+    };
     file_mtf = create_mtf_table ();
     new_locs = [| |];
     new_locs_len = 0;
@@ -614,8 +625,10 @@ let start_memprof dest sampling_rate =
     start_alloc_id = 0;
     packet_times = { t_start = now; t_end = now };
     packet = mkbuffer (Bytes.make 8000 '\102');
+
+    stopped = false;
   } in
-  put_ctf_header s.packet 0 0. 0. 0 0;
+  put_ctf_header s.packet s.trace_info 0 0. 0. 0 0;
   Gc.Memprof.start
     ~callstack_size:max_int
     ~minor_alloc_callback:(fun info -> log_alloc s false info)
@@ -627,15 +640,75 @@ let start_memprof dest sampling_rate =
     ();
   s
 
-let stop_memprof s =
-  Gc.Memprof.stop ();
-  flush s
+let stop_tracing s =
+  if not s.stopped then begin
+    s.stopped <- true;
+    Gc.Memprof.stop ();
+    flush s
+  end
+
+let trace_until_exit ~sampling_rate ~filename =
+  let s = start_tracing ~sampling_rate ~filename in
+  at_exit (fun () -> stop_tracing s)
+
+
+type obj_id = int
+type timestamp = float
+type location_code = Int64.t
+
+type trace = {
+  fd : Unix.file_descr;
+  info : trace_info;
+  (* FIXME: opt to better hashtable *)
+  loc_table : (Int64.t, location list) Hashtbl.t
+}
+
+let trace_info { info; _ } = info
+
+let lookup_location { loc_table; _ } code =
+  match Hashtbl.find loc_table code with
+  | v -> v
+  | exception Not_found -> raise (Invalid_argument "invalid location code")
+
+type event =
+  | Alloc of {
+    obj_id : obj_id;
+    length : int;
+    nsamples : int;
+    is_major : bool;
+    common_prefix : int;
+    new_suffix : location_code list;
+  }
+  | Promote of obj_id
+  | Collect of obj_id
+
+let get_alloc cache alloc_id b =
+  let length = get_vint b in
+  let nsamples = get_vint b in
+  let is_major = get_8 b |> function 0 -> false | _ -> true in
+  let common_prefix = get_vint b in
+  let new_suffix = get_coded_backtrace cache b in
+  Alloc { obj_id = alloc_id; length; nsamples; is_major; common_prefix; new_suffix }
+
+(* FIXME: overflow, failure to bump end time *)
+
+let get_promote alloc_id b =
+  let id_delta = get_vint b in
+  check_fmt "promote id sync" (id_delta >= 0);
+  let id = alloc_id - 1 - id_delta in
+  Promote id
+
+let get_collect alloc_id b =
+  let id_delta = get_vint b in
+  check_fmt "collect id sync" (id_delta >= 0);
+  let id = alloc_id - 1 - id_delta in
+  Collect id
 
 let parse_packet_events file_mtf loc_table cache hdrinfo b f =
   let alloc_id = ref (Int64.to_int hdrinfo.alloc_id_begin) in
   let last_time = ref 0. in
   while remaining b > 0 do
-    let last_pos = b.pos in
+    (*let last_pos = b.pos in*)
     let (ev, time) = get_event_header hdrinfo b in
     check_fmt "monotone timestamps" (!last_time <= time);
     last_time := time;
@@ -664,28 +737,29 @@ let parse_packet_events file_mtf loc_table cache hdrinfo b f =
   done;
   check_fmt "alloc id sync" (hdrinfo.alloc_id_end = Int64.of_int (!alloc_id))
 
-let parse_trace filename loc_table f =
+let rec read_into fd buf off =
+  assert (0 <= off && off <= Bytes.length buf);
+  if off = Bytes.length buf then
+    { buf; pos = 0; pos_end = off }
+  else begin
+    let n = Unix.read fd buf off (Bytes.length buf - off) in
+    if n = 0 then
+      (* EOF *)
+      { buf; pos = 0; pos_end = off }
+    else
+      read_into fd buf (off + n)
+  end
+
+let iter_trace {fd; loc_table; _} f =
   let cache = create_reader_cache () in
   let file_mtf = create_mtf_table () in
-  let fd = Unix.openfile filename [Unix.O_RDONLY] 0 in
+  Unix.lseek fd 0 SEEK_SET |> ignore;
   (* FIXME error handling *)
-  let buf = Bytes.make 1_000_000 '\000' in
-  let rec read_into buf off =
-    assert (0 <= off && off <= Bytes.length buf);
-    if off = Bytes.length buf then
-      { buf; pos = 0; pos_end = off }
-    else begin
-      let n = Unix.read fd buf off (Bytes.length buf - off) in
-      if n = 0 then
-        (* EOF *)
-        { buf; pos = 0; pos_end = off }
-      else
-        read_into buf (off + n)
-    end in
+  let buf = Bytes.make (1 lsl 18) '\000' in
   let refill b =
     let len = remaining b in
     Bytes.blit b.buf b.pos b.buf 0 len;
-    read_into b.buf len in
+    read_into fd b.buf len in
   let rec go last_timestamp last_alloc_id b =
     let b = if remaining b < 4096 then refill b else b in
     if remaining b = 0 then () else
@@ -696,30 +770,11 @@ let parse_trace filename loc_table f =
     let b = if remaining b < len then refill b else b in
     parse_packet_events file_mtf loc_table cache info { b with pos_end = b.pos + len } f;
     go info.time_end info.alloc_id_end { b with pos = b.pos + len } in
-  go 0L 0L { buf; pos = 0; pos_end = 0 };
-  Unix.close fd
+  go 0L 0L { buf; pos = 0; pos_end = 0 }
 
-
-let[@inline always] beep i = ((i * 483205) land 0xfffff, i)
-let[@inline always] mul i = let m = beep i in assert (i >= 0); m
-
-let write () =
-  let out = Unix.openfile "memtrace.ctf" [Unix.O_CREAT;Unix.O_WRONLY;Unix.O_TRUNC] 0o600 in
-  let s = start_memprof out 0.001 in
-  let module S = Set.Make (struct type t = (int * int) option let compare = compare end) in
-  List.init 10_000 (fun i -> Some (if i < -100 then assert false else mul i))
-  |> List.map (fun x -> (*Unix.sleepf 0.001;*) S.singleton x)
-  |> List.fold_left S.union S.empty
-  |> Sys.opaque_identity
-  |> ignore;
-  Gc.full_major ();
-  stop_memprof s
-
-
-let read () =
-  let filename = "memtrace.ctf" in
-  let loc_table = Hashtbl.create 20 in
-  parse_trace filename loc_table (fun time ev ->
+(*
+let iter_trace { fd; info; loc_table } =
+  parse_trace fd loc_table (fun time ev ->
     Printf.printf "%010f " time;
     match ev with
   | Alloc {obj_id; length; nsamples; is_major; common_prefix; new_suffix} ->
@@ -734,92 +789,23 @@ let read () =
   | Collect id ->
     Printf.printf "%010d collect\n" id);
   Printf.printf "end\n%!"
+*)
 
-
-module StrTbl = Hashtbl.Make(struct type t = string let equal = String.equal let hash = Hashtbl.hash end)
-type summary = {
-  mutable samples: int;
-  subsums : summary StrTbl.t;
-}
-
-let summary () =
-  let filename = "memtrace.ctf" in
+let open_trace ~filename =
+  let fd = Unix.openfile filename [Unix.O_RDONLY] 0 in
+  (* FIXME magic numbers *)
+  let buf = Bytes.make (1 lsl 15) '\000' in
+  let b = read_into fd buf 0 in
+  let info = get_ctf_header b in
+  let info : trace_info = {
+    sample_rate = 0.;
+    executable_name = info.executable_name;
+    host_name = info.host_name;
+    start_time = 0.;
+    pid = 0
+  } in
   let loc_table = Hashtbl.create 20 in
-  let last = ref [| |] in
-  let summary = { samples = 0; subsums = StrTbl.create 20 } in
-  let count (filenames, nsamples) =
-    let lastsum =
-      List.fold_left (fun sum f ->
-        if StrTbl.mem sum.subsums f then
-          StrTbl.find sum.subsums f
-        else begin
-          let s = { samples = 0; subsums = StrTbl.create 10 } in
-          StrTbl.add sum.subsums f s;
-          s
-        end) summary filenames in
-    lastsum.samples <- lastsum.samples + nsamples in
+  { fd; info; loc_table }
 
-  let allocs = Hashtbl.create 20 in
-  let sz = ref 0 in
-  let nallocs = ref 0 in
-  parse_trace filename loc_table (fun time ev ->
-    match ev with
-  | Alloc {obj_id; length; nsamples; is_major; common_prefix; new_suffix} ->
-    let bt = Array.concat [Array.sub !last 0 common_prefix; Array.of_list new_suffix] in
-    last := bt;
-    let str_of_location { filename; line; start_char; end_char  } =
-      Printf.sprintf "%s:%d" filename line in
-    let print_location ppf { filename; line; start_char; end_char  } =
-      Printf.fprintf ppf "%s:%d:%d-%d" filename line start_char end_char in
-    let filenames = List.concat (bt |> Array.map (fun l ->
-      let locs = Hashtbl.find loc_table l in
-      List.map (fun ({ filename; _ } as l) -> str_of_location l) locs) |> Array.to_list) in
-    let seen = StrTbl.create 10 in
-    let rec dedup = function
-      | [] -> []
-      | [x] -> [x]
-      | x :: x' :: xs when x = x' -> dedup (x :: xs)
-      | x :: xs -> x :: dedup xs in
-    let filenames = dedup filenames in
-    let first_filenames =
-      filenames |> List.filter (fun f ->
-        if StrTbl.mem seen f then false else begin
-          StrTbl.add seen f ();
-          true
-        end) in
-    Hashtbl.add allocs obj_id (first_filenames, nsamples);
-    sz := !sz + common_prefix + List.length new_suffix;
-    incr nallocs;
-    if true then count (filenames, nsamples);
-    (* count (first_filenames, nsamples) *)
-(*    first_filenames |> List.iter (Printf.printf " %s");
-      Printf.printf "\n%!"*)
-  | Promote i -> ()
-  (*count (Hashtbl.find allocs i)*)
-  | Collect i -> assert (Hashtbl.mem allocs i); Hashtbl.remove allocs i );
-
-  let rec dump_summary files_rev summary =
-    if summary.samples > 0 then begin match List.rev files_rev with
-    | [] -> ()
-    | [_] -> ()
-    | (x :: xs) ->
-      Printf.printf "%s" x;
-      List.iter (Printf.printf ";%s") xs;
-      Printf.printf " %d\n" summary.samples
-    end;
-    let keys = StrTbl.fold (fun k _ ks -> k :: ks) summary.subsums [] |> List.sort String.compare in
-    keys |> List.iter (fun f ->
-      let s = StrTbl.find summary.subsums f in
-      dump_summary (f :: files_rev) s) in
-  dump_summary [] summary;
-  Printf.fprintf stderr "sz/kb %d\nallocs %d\n" (!sz / 1024) !nallocs
-
-
-let () =
-  if Array.length Sys.argv = 1 then
-    write ()
-  else
-    try
-      summary ()
-    with
-    | Parse_error (`Bad_format s) -> Printf.printf "parse error: %s\n" s
+let close_trace t =
+  Unix.close t.fd
