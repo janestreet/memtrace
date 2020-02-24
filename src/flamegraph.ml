@@ -1,6 +1,3 @@
-let () = print_endline "beep"
-
-
 module StrTbl = Hashtbl.Make(struct type t = string let equal = String.equal let hash = Hashtbl.hash end)
 type summary = {
   mutable samples: int;
@@ -83,7 +80,7 @@ let summary filename =
 
 let () =
   if Array.length Sys.argv <> 2 then
-    Printf.fprintf stderr "Usage: %s <trace file>" Sys.executable_name
+    Printf.fprintf stderr "Usage: %s <trace file>\n" Sys.executable_name
   else
     summary Sys.argv.(1)
 

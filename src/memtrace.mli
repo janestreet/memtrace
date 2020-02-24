@@ -8,14 +8,17 @@ val stop_tracing : tracer -> unit
 type trace
 val open_trace : filename:string -> trace
 
-type timestamp = float
+type timestamp = Int64.t
+val to_unix_timestamp : timestamp -> float
+
+type timedelta = Int64.t  (* microseconds *)
 
 type trace_info = {
   sample_rate : float;
   executable_name : string;
   host_name : string;
   start_time : timestamp;
-  pid : int
+  pid : Int32.t
 }
 val trace_info : trace -> trace_info
 
@@ -43,6 +46,6 @@ type event =
   | Promote of obj_id
   | Collect of obj_id
 
-val iter_trace : trace -> (timestamp -> event -> unit) -> unit
+val iter_trace : trace -> (timedelta -> event -> unit) -> unit
 
 val close_trace : trace -> unit

@@ -12,3 +12,8 @@
   (name lists_and_sets)
   (modules lists_and_sets)
   (libraries memtrace))
+
+(executable
+  (name dump_trace)
+  (modules dump_trace)
+  (libraries memtrace))

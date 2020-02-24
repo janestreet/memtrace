@@ -36,11 +36,7 @@ trace {
   major = 1;
   minor = 8;
   byte_order = le;
-  packet.header := struct {
-    uint32 magic;
-    /* Support multiple streams? */
-    /* mention trace UUID? */
-  };
+  packet.header := struct { uint32 magic; };
 };
 
 stream {

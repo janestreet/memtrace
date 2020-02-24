@@ -1,8 +1,0 @@
-EXCLUDE_QUERY_DIR
-B /home/sdolan/q/ocaml-trunk/_inst/lib/ocaml
-B ../_build/default/src/.flamegraph.eobjs/byte
-B ../_build/default/src/.lists_and_sets.eobjs/byte
-B ../_build/default/src/.memtrace.objs/byte
-S /home/sdolan/q/ocaml-trunk/_inst/lib/ocaml
-S .
-FLG -w @a-4-29-40-41-42-44-45-48-58-59-60-40 -strict-sequence -strict-formats -short-paths -keep-locs -w @a-4-29-40-41-42-44-45-48-58-59-60-40 -strict-sequence -strict-formats -short-paths -keep-locs -w @a-4-29-40-41-42-44-45-48-58-59-60-40 -strict-sequence -strict-formats -short-paths -keep-locs

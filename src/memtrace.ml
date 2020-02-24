@@ -147,8 +147,8 @@ type trace_info = {
   sample_rate : float;
   executable_name : string;
   host_name : string;
-  start_time : float;
-  pid : int
+  start_time : Int64.t;
+  pid : Int32.t
 }
 
 type tracer = {
@@ -196,6 +196,7 @@ let to_timestamp_64 t =
 let of_timestamp_64 n =
   Float.of_int (Int64.to_int n) /. 1_000_000.
 
+let to_unix_timestamp = of_timestamp_64
 
 let put_ctf_header b info size tstart tend alloc_id_begin alloc_id_end =
   put_32 b 0xc1fc1fc1l;
@@ -209,7 +210,7 @@ let put_ctf_header b info size tstart tend alloc_id_begin alloc_id_end =
   put_float b info.sample_rate;
   put_string b info.executable_name;
   put_string b info.host_name;
-  put_32 b (Int32.of_int info.pid)
+  put_32 b info.pid
 
 type header_info = {
   content_size: int; (* bytes, excluding header *)
@@ -294,7 +295,7 @@ let get_event_header info b =
   check_fmt "time in packet bounds" (time <= info.time_end);
   let ev = event_of_code (Int32.(to_int (shift_right code
                                            event_header_time_len))) in
-  (ev, of_timestamp_64 time)
+  (ev, time)
 
 let mtf_length = 15
 let create_mtf_table () =
@@ -499,9 +500,6 @@ let log_alloc s is_major (info : Gc.Memprof.allocation) =
 
   let bt_off = b.pos in
   put_16 b 0;
-
-  Printf.printf "!\n%!";
-
   let rec code_no_prediction predictor pos ncodes =
     if pos < 0 then
       ncodes
@@ -519,7 +517,7 @@ let log_alloc s is_major (info : Gc.Memprof.allocation) =
         log_new_loc s (slot, Printexc.get_raw_backtrace_slot info.callstack pos);
         let bucket =
           if s.cache_date.(hash1) < s.cache_date.(hash2) then hash1 else hash2 in
-        Printf.printf "miss %05d %016x\n%!" bucket slot; (*" %016x\n%!" bucket slot;*)
+        (* Printf.printf "miss %05d %016x\n%!" bucket slot; (*" %016x\n%!" bucket slot;*) *)
         s.cache.(bucket) <- slot;
         s.cache_date.(bucket) <- id;
         s.cache_next.(predictor) <- bucket;
@@ -529,7 +527,7 @@ let log_alloc s is_major (info : Gc.Memprof.allocation) =
       end
     end
   and code_cache_hit predictor hit pos ncodes =
-    Printf.printf "hit %d\n" hit;
+    (* Printf.printf "hit %d\n" hit; *)
     s.cache_date.(hit) <- id;
     put_16 s.packet (hit lsl 1);
     s.cache_next.(predictor) <- hit;
@@ -544,7 +542,7 @@ let log_alloc s is_major (info : Gc.Memprof.allocation) =
       let pred_bucket = s.cache_next.(predictor) in
       if s.cache.(pred_bucket) = slot then begin
         (* correct prediction *)
-        Printf.printf "pred %d %d\n" pred_bucket ncorrect;
+        (* Printf.printf "pred %d %d\n" pred_bucket ncorrect; *)
         if ncorrect = 255 then begin
           (* overflow: code a new prediction block *)
           put_8 s.packet ncorrect;
@@ -606,8 +604,8 @@ let start_tracing ~sampling_rate ~filename =
       sample_rate = sampling_rate;
       executable_name = Sys.executable_name;
       host_name = Unix.gethostname ();
-      pid = Unix.getpid ();
-      start_time = now
+      pid = Int32.of_int (Unix.getpid ());
+      start_time = to_timestamp_64 now
     };
     file_mtf = create_mtf_table ();
     new_locs = [| |];
@@ -653,7 +651,8 @@ let trace_until_exit ~sampling_rate ~filename =
 
 
 type obj_id = int
-type timestamp = float
+type timestamp = Int64.t
+type timedelta = Int64.t
 type location_code = Int64.t
 
 type trace = {
@@ -704,14 +703,15 @@ let get_collect alloc_id b =
   let id = alloc_id - 1 - id_delta in
   Collect id
 
-let parse_packet_events file_mtf loc_table cache hdrinfo b f =
+let parse_packet_events file_mtf loc_table cache start_time hdrinfo b f =
   let alloc_id = ref (Int64.to_int hdrinfo.alloc_id_begin) in
-  let last_time = ref 0. in
+  let last_time = ref 0L in
   while remaining b > 0 do
     (*let last_pos = b.pos in*)
     let (ev, time) = get_event_header hdrinfo b in
     check_fmt "monotone timestamps" (!last_time <= time);
     last_time := time;
+    let dt = Int64.(sub time start_time) in
     begin match ev with
     | Ev_location ->
       let (id, loc) = get_backtrace_slot file_mtf b in
@@ -724,15 +724,15 @@ let parse_packet_events file_mtf loc_table cache hdrinfo b f =
       let info = get_alloc cache !alloc_id b in
       incr alloc_id;
       (*Printf.printf "%3d " (b.pos - last_pos);*)
-      f time info
+      f dt info
     | Ev_collect ->
       let info = get_collect !alloc_id b in
       (*Printf.printf "%3d " (b.pos - last_pos);*)
-      f time info
+      f dt info
     | Ev_promote ->
       let info = get_promote !alloc_id b in
       (*Printf.printf "%3d " (b.pos - last_pos);*)
-      f time info
+      f dt info
     end
   done;
   check_fmt "alloc id sync" (hdrinfo.alloc_id_end = Int64.of_int (!alloc_id))
@@ -750,7 +750,7 @@ let rec read_into fd buf off =
       read_into fd buf (off + n)
   end
 
-let iter_trace {fd; loc_table; _} f =
+let iter_trace {fd; loc_table; info = { start_time; _ } } f =
   let cache = create_reader_cache () in
   let file_mtf = create_mtf_table () in
   Unix.lseek fd 0 SEEK_SET |> ignore;
@@ -768,28 +768,10 @@ let iter_trace {fd; loc_table; _} f =
     check_fmt "inter-packet alloc ID" (last_alloc_id = info.alloc_id_begin);
     let len = info.content_size in
     let b = if remaining b < len then refill b else b in
-    parse_packet_events file_mtf loc_table cache info { b with pos_end = b.pos + len } f;
+    parse_packet_events file_mtf loc_table cache start_time info
+      { b with pos_end = b.pos + len } f;
     go info.time_end info.alloc_id_end { b with pos = b.pos + len } in
   go 0L 0L { buf; pos = 0; pos_end = 0 }
-
-(*
-let iter_trace { fd; info; loc_table } =
-  parse_trace fd loc_table (fun time ev ->
-    Printf.printf "%010f " time;
-    match ev with
-  | Alloc {obj_id; length; nsamples; is_major; common_prefix; new_suffix} ->
-    Printf.printf "%010d alloc %d %d %b %d:" obj_id length nsamples is_major common_prefix;
-    let print_location ppf { filename; line; start_char; end_char  } =
-      Printf.fprintf ppf "%s:%d:%d-%d" filename line start_char end_char in
-    new_suffix |> List.iter (fun s ->
-      Hashtbl.find loc_table s |> List.iter (Printf.printf " %a" print_location));
-    Printf.printf "\n%!"
-  | Promote id ->
-    Printf.printf "%010d promote\n" id
-  | Collect id ->
-    Printf.printf "%010d collect\n" id);
-  Printf.printf "end\n%!"
-*)
 
 let open_trace ~filename =
   let fd = Unix.openfile filename [Unix.O_RDONLY] 0 in
@@ -798,11 +780,11 @@ let open_trace ~filename =
   let b = read_into fd buf 0 in
   let info = get_ctf_header b in
   let info : trace_info = {
-    sample_rate = 0.;
+    sample_rate = info.sample_rate;
     executable_name = info.executable_name;
     host_name = info.host_name;
-    start_time = 0.;
-    pid = 0
+    start_time = info.time_begin;
+    pid = info.pid
   } in
   let loc_table = Hashtbl.create 20 in
   { fd; info; loc_table }
