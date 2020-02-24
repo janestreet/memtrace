@@ -1,3 +1,24 @@
+module Deps = struct
+  type out_file = Unix.file_descr
+  let open_out filename =
+    Unix.openfile filename Unix.[O_CREAT;O_WRONLY;O_TRUNC] 0o666
+  let write fd b off len = Unix.write fd b off len
+  let close_out fd = Unix.close fd
+
+  type in_file = Unix.file_descr
+  let open_in filename =
+    Unix.openfile filename [Unix.O_RDONLY] 0
+  let read fd b off len = Unix.read fd b off len
+  let reset_in fd = Unix.lseek fd 0 SEEK_SET |> ignore
+  let close_in fd = Unix.close fd
+
+  let timestamp () = Unix.gettimeofday ()
+
+  let hostname () = Unix.gethostname ()
+  let exec_name () = Sys.executable_name
+  let pid () = Unix.getpid ()
+end
+
 (* Buffer management *)
 
 type buffer = {
@@ -152,7 +173,7 @@ type trace_info = {
 }
 
 type tracer = {
-  dest : Unix.file_descr;
+  dest : Deps.out_file;
   trace_info : trace_info;
   file_mtf : mtf_table;
   mutable new_locs : (int * Printexc.raw_backtrace_slot) array;
@@ -415,7 +436,7 @@ let flush s =
       s.packet_times.t_start
       s.start_alloc_id
       s.start_alloc_id;
-    Unix.write s.dest s.new_locs_buf 0 blen |> ignore
+    Deps.write s.dest s.new_locs_buf 0 blen |> ignore
   done;
   (* Next, flush the actual events *)
   let evlen = s.packet.pos in
@@ -427,7 +448,7 @@ let flush s =
     s.packet_times.t_end
     s.start_alloc_id
     s.next_alloc_id;
-  Unix.write s.dest s.packet.buf 0 evlen |> ignore;
+  Deps.write s.dest s.packet.buf 0 evlen |> ignore;
   (* Finally, reset the buffer *)
   s.packet_times.t_start <- s.packet_times.t_end;
   s.new_locs_len <- 0;
@@ -439,7 +460,7 @@ let max_ev_size = 4096  (* FIXME arbitrary number, overflow *)
 
 let begin_event s ev =
   if remaining s.packet < max_ev_size || s.new_locs_len > 128 then flush s;
-  let now = Unix.gettimeofday () in
+  let now = Deps.timestamp () in
   s.packet_times.t_end <- now;
   put_event_header s.packet ev now
 
@@ -596,15 +617,15 @@ let log_collect s id =
   put_vint b (s.next_alloc_id - 1 - id)
 
 let start_tracing ~sampling_rate ~filename =
-  let dest = Unix.openfile filename Unix.[O_CREAT;O_WRONLY;O_TRUNC] 0o600 in
-  let now = Unix.gettimeofday () in
+  let dest = Deps.open_out filename in
+  let now = Deps.timestamp () in
   let s = {
     dest;
     trace_info = {
       sample_rate = sampling_rate;
-      executable_name = Sys.executable_name;
-      host_name = Unix.gethostname ();
-      pid = Int32.of_int (Unix.getpid ());
+      executable_name = Deps.exec_name ();
+      host_name = Deps.hostname ();
+      pid = Int32.of_int (Deps.pid ());
       start_time = to_timestamp_64 now
     };
     file_mtf = create_mtf_table ();
@@ -642,7 +663,8 @@ let stop_tracing s =
   if not s.stopped then begin
     s.stopped <- true;
     Gc.Memprof.stop ();
-    flush s
+    flush s;
+    Deps.close_out s.dest
   end
 
 let trace_until_exit ~sampling_rate ~filename =
@@ -656,7 +678,7 @@ type timedelta = Int64.t
 type location_code = Int64.t
 
 type trace = {
-  fd : Unix.file_descr;
+  fd : Deps.in_file;
   info : trace_info;
   (* FIXME: opt to better hashtable *)
   loc_table : (Int64.t, location list) Hashtbl.t
@@ -742,7 +764,7 @@ let rec read_into fd buf off =
   if off = Bytes.length buf then
     { buf; pos = 0; pos_end = off }
   else begin
-    let n = Unix.read fd buf off (Bytes.length buf - off) in
+    let n = Deps.read fd buf off (Bytes.length buf - off) in
     if n = 0 then
       (* EOF *)
       { buf; pos = 0; pos_end = off }
@@ -753,7 +775,7 @@ let rec read_into fd buf off =
 let iter_trace {fd; loc_table; info = { start_time; _ } } f =
   let cache = create_reader_cache () in
   let file_mtf = create_mtf_table () in
-  Unix.lseek fd 0 SEEK_SET |> ignore;
+  Deps.reset_in fd;
   (* FIXME error handling *)
   let buf = Bytes.make (1 lsl 18) '\000' in
   let refill b =
@@ -774,7 +796,7 @@ let iter_trace {fd; loc_table; info = { start_time; _ } } f =
   go 0L 0L { buf; pos = 0; pos_end = 0 }
 
 let open_trace ~filename =
-  let fd = Unix.openfile filename [Unix.O_RDONLY] 0 in
+  let fd = Deps.open_in filename in
   (* FIXME magic numbers *)
   let buf = Bytes.make (1 lsl 15) '\000' in
   let b = read_into fd buf 0 in
@@ -790,4 +812,4 @@ let open_trace ~filename =
   { fd; info; loc_table }
 
 let close_trace t =
-  Unix.close t.fd
+  Deps.close_in t.fd
