@@ -17,6 +17,34 @@ module Deps = struct
   let hostname () = Unix.gethostname ()
   let exec_name () = Sys.executable_name
   let pid () = Unix.getpid ()
+
+
+  type allocation = Gc.Memprof.allocation = private
+    { n_samples : int;
+      size : int;
+      unmarshalled : bool;
+      callstack : Printexc.raw_backtrace
+    }
+
+  let memprof_start
+    ~callstack_size
+    ~(minor_alloc_callback:allocation -> _)
+    ~(major_alloc_callback:allocation -> _)
+    ~promote_callback
+    ~minor_dealloc_callback
+    ~major_dealloc_callback
+    ~sampling_rate
+    () : unit =
+(*
+    ignore (callstack_size, minor_alloc_callback, major_alloc_callback,
+            promote_callback, minor_dealloc_callback, major_dealloc_callback, sampling_rate);
+    assert false
+*)
+    Gc.Memprof.start ~callstack_size ~minor_alloc_callback ~major_alloc_callback
+      ~promote_callback ~minor_dealloc_callback ~major_dealloc_callback ~sampling_rate
+      ()
+  let memprof_stop () : unit = Gc.Memprof.stop ()
+
 end
 
 (* Buffer management *)
@@ -378,8 +406,8 @@ let put_backtrace_slot b file_mtf (id, loc) =
   let max_locs = 255 in
   let locs =
     if List.length locs <= max_locs then locs else
-      ((List.filteri (fun i _ -> i < max_locs - 1) locs)
-       @
+      ((*(List.filteri (fun i _ -> i < max_locs - 1) locs)
+        @*)
       [ { filename = "<unknown>"; line_number = 1; start_char = 1; end_char = 1 } ]) in
   assert (List.length locs <= max_locs);
   put_64 b (Int64.of_int id);
@@ -490,13 +518,13 @@ let get_coded_backtrace { cache_loc ; cache_pred } b =
   let n = get_16 b in
   decode 0 [] n
 
-let log_alloc s is_major (info : Gc.Memprof.allocation) =
+let log_alloc s is_major callstack length n_samples =
   begin_event s Ev_alloc;
   let id = s.next_alloc_id in
   s.next_alloc_id <- id + 1;
 
   (* Find length of common suffix *)
-  let raw_stack : int array = Obj.magic info.callstack in
+  let raw_stack : int array = Obj.magic callstack in
   let last = s.last_callstack in
   let suff = ref 0 in
   let i = ref (Array.length raw_stack - 1)
@@ -514,8 +542,8 @@ let log_alloc s is_major (info : Gc.Memprof.allocation) =
 
   let b = s.packet in
   let common_pfx_len = Array.length raw_stack - 1 - !i in
-  put_vint b info.size;
-  put_vint b info.n_samples;
+  put_vint b length;
+  put_vint b n_samples;
   put_8 b (if is_major then 1 else 0);
   put_vint b common_pfx_len;
 
@@ -535,7 +563,7 @@ let log_alloc s is_major (info : Gc.Memprof.allocation) =
         code_cache_hit predictor hash2 pos ncodes
       end else begin
         (* cache miss *)
-        log_new_loc s (slot, Printexc.get_raw_backtrace_slot info.callstack pos);
+        log_new_loc s (slot, Printexc.get_raw_backtrace_slot callstack pos);
         let bucket =
           if s.cache_date.(hash1) < s.cache_date.(hash2) then hash1 else hash2 in
         (* Printf.printf "miss %05d %016x\n%!" bucket slot; (*" %016x\n%!" bucket slot;*) *)
@@ -648,10 +676,12 @@ let start_tracing ~sampling_rate ~filename =
     stopped = false;
   } in
   put_ctf_header s.packet s.trace_info 0 0. 0. 0 0;
-  Gc.Memprof.start
+  Deps.memprof_start
     ~callstack_size:max_int
-    ~minor_alloc_callback:(fun info -> log_alloc s false info)
-    ~major_alloc_callback:(fun info -> log_alloc s true info)
+    ~minor_alloc_callback:(fun info ->
+      log_alloc s false info.callstack info.size info.n_samples)
+    ~major_alloc_callback:(fun info ->
+      log_alloc s true info.callstack info.size info.n_samples)
     ~promote_callback:(fun id -> log_promote s id)
     ~minor_dealloc_callback:(fun id -> log_collect s id)
     ~major_dealloc_callback:(fun id -> log_collect s id)
@@ -662,7 +692,7 @@ let start_tracing ~sampling_rate ~filename =
 let stop_tracing s =
   if not s.stopped then begin
     s.stopped <- true;
-    Gc.Memprof.stop ();
+    Deps.memprof_stop ();
     flush s;
     Deps.close_out s.dest
   end
