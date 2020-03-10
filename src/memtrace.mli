@@ -30,6 +30,7 @@ type location = {
   line : int;
   start_char : int;
   end_char : int;
+  defname : string;
 }
 
 val lookup_location : trace -> location_code -> location list

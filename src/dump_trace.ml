@@ -5,9 +5,9 @@ let dump filename =
     Printf.printf "%010Ld " time;
     match ev with
   | Alloc {obj_id; length; nsamples; is_major; common_prefix; new_suffix} ->
-    Printf.printf "%010d %s n=%d len=%d %d:" (obj_id :> int) (if is_major then "alloc_major" else "alloc") nsamples length common_prefix;
-    let print_location ppf { filename; line; start_char; end_char  } =
-      Printf.fprintf ppf "%s:%d:%d-%d" filename line start_char end_char in
+    Printf.printf "%010d %s %d len=%d %d:" (obj_id :> int) (if is_major then "alloc_major" else "alloc") nsamples length common_prefix;
+    let print_location ppf { filename; line; start_char; end_char; defname  } =
+      Printf.fprintf ppf "%s@%s:%d:%d-%d" defname filename line start_char end_char in
     new_suffix |> List.iter (fun s ->
       lookup_location trace s |> List.iter (Printf.printf " %a" print_location));
     Printf.printf "\n%!"

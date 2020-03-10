@@ -17,3 +17,9 @@
   (name dump_trace)
   (modules dump_trace)
   (libraries memtrace))
+
+
+(executable
+  (name count)
+  (modules count)
+  (libraries memtrace))

@@ -29,9 +29,10 @@ let summary filename =
   | Alloc {obj_id; length=_; nsamples; is_major=_; common_prefix; new_suffix} ->
     let bt = Array.concat [Array.sub !last 0 common_prefix; Array.of_list new_suffix] in
     last := bt;
-    let str_of_location { filename; line; start_char=_; end_char=_  } =
-      Printf.sprintf "%s:%d" filename line in
-    let _print_location ppf { filename; line; start_char; end_char  } =
+    let str_of_location l =
+      l.defname
+      (*Printf.sprintf "%s:%d" filename line*) in
+    let _print_location ppf { filename; line; start_char; end_char; _  } =
       Printf.fprintf ppf "%s:%d:%d-%d" filename line start_char end_char in
     let filenames = List.concat (bt |> Array.map (fun l ->
       let locs = lookup_location trace l in
@@ -43,8 +44,9 @@ let summary filename =
       | x :: x' :: xs when x = x' -> dedup (x :: xs)
       | x :: xs -> x :: dedup xs in
     let filenames = dedup filenames in
+    let first_filenames = (*List.rev*) filenames in
     let first_filenames =
-      filenames |> List.filter (fun f ->
+      first_filenames |> List.filter (fun f ->
         if StrTbl.mem seen f then false else begin
           StrTbl.add seen f ();
           true
@@ -52,7 +54,7 @@ let summary filename =
     Hashtbl.add allocs obj_id (first_filenames, nsamples);
     sz := !sz + common_prefix + List.length new_suffix;
     incr nallocs;
-    if true then count (filenames, nsamples);
+    if true then count (first_filenames, nsamples);
     (* count (first_filenames, nsamples) *)
 (*    first_filenames |> List.iter (Printf.printf " %s");
       Printf.printf "\n%!"*)
@@ -74,8 +76,7 @@ let summary filename =
     keys |> List.iter (fun f ->
       let s = StrTbl.find summary.subsums f in
       dump_summary (f :: files_rev) s) in
-  dump_summary [] summary;
-  Printf.fprintf stderr "sz/kb %d\nallocs %d\n" (!sz / 1024) !nallocs
+  dump_summary [] summary
 
 
 let () =

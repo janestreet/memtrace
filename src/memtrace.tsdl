@@ -60,14 +60,20 @@ stream {
 
 typealias struct {
   integer {size=20; align=1; signed=false;} line;
-  integer {size=12; align=1; signed=false;} start_char;
-  integer {size=12; align=1; signed=false;} end_char;
-  enum : integer {size=4; align=1; signed=false;}
-    { mtf = 0...14, newname = 15 } filename;
+  integer {size=8; align=1; signed=false;} start_char;
+  integer {size=10; align=1; signed=false;} end_char;
+  enum : integer {size=5; align=1; signed=false;}
+    { mtf = 0...30, new = 31 } filename;
+  enum : integer {size=5; align=1; signed=false;}
+    { mtf = 0...30, new = 31 } defname;
   variant <filename> {
     struct {} mtf;
-    string newname;
+    string new;
   } opt_filename;
+  variant <defname> {
+    struct {} mtf;
+    string new;
+  } opt_defname;
 } := location;
 
 event {

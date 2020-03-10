@@ -204,6 +204,7 @@ type tracer = {
   dest : Deps.out_file;
   trace_info : trace_info;
   file_mtf : mtf_table;
+  defn_mtfs : mtf_table array;
   mutable new_locs : (int * Printexc.raw_backtrace_slot) array;
   mutable new_locs_len : int;
   new_locs_buf : Bytes.t;
@@ -346,10 +347,12 @@ let get_event_header info b =
                                            event_header_time_len))) in
   (ev, time)
 
-let mtf_length = 15
+let mtf_length = 31
 let create_mtf_table () =
-  Array.init mtf_length (fun i -> "??"^string_of_int i) (* must be distinct *)
-let mtf_encode mtf filename =
+  Array.init mtf_length (fun i ->
+    (* entries in MTF table must be distinct *)
+    ("??" ^ string_of_int i))
+let mtf_search mtf filename =
   let rec insert mtf prev filename i =
     if i = mtf_length then
       (* not found *)
@@ -368,30 +371,27 @@ let mtf_encode mtf filename =
     let prev = mtf.(0) in
     mtf.(0) <- filename;
     insert mtf prev filename 1
-let mtf_decode mtf i =
+let mtf_swap mtf i =
   assert (i < mtf_length);
-  if i = 0 then
-    mtf.(0)
-  else begin
+  if i <> 0 then begin
     let f = mtf.(i) in
     Array.blit mtf 0 mtf 1 i;
-    mtf.(0) <- f;
-    f
+    mtf.(0) <- f
   end
-let mtf_new mtf filename =
-  Array.blit mtf 0 mtf 1 (mtf_length - 1);
-  mtf.(0) <- filename
+let mtf_bump mtf =
+  Array.blit mtf 0 mtf 1 (mtf_length - 1)
 
 type location = {
   filename : string;
   line : int;
   start_char : int;
   end_char : int;
+  defname : string;
 }
 
 (* FIXME: max_location overflow *)
 let max_location = 4 * 1024
-let put_backtrace_slot b file_mtf (id, loc) =
+let put_backtrace_slot b file_mtf defn_mtfs (id, loc) =
   let open Printexc in
   let rec get_locations slot =
     let tail =
@@ -399,48 +399,82 @@ let put_backtrace_slot b file_mtf (id, loc) =
       | None -> []
       | Some slot -> get_locations slot in
     let slot = convert_raw_backtrace_slot slot in
-    match Slot.location slot with
-    | None -> tail
-    | Some l -> l :: tail in
+    match Slot.location slot, Slot.defname slot with
+    | None, _ -> tail
+    | Some l, None -> (l, "??") :: tail
+    | Some l, Some d -> (l,d) :: tail in
   let locs = get_locations loc |> List.rev in
   let max_locs = 255 in
   let locs =
     if List.length locs <= max_locs then locs else
       ((*(List.filteri (fun i _ -> i < max_locs - 1) locs)
         @*)
-      [ { filename = "<unknown>"; line_number = 1; start_char = 1; end_char = 1 } ]) in
+      [ { filename = "<unknown>"; line_number = 1; start_char = 1; end_char = 1 }, "??" ]) in
   assert (List.length locs <= max_locs);
   put_64 b (Int64.of_int id);
   put_8 b (List.length locs);
-  locs |> List.iter (fun (loc : location) ->
+  locs |> List.iter (fun ((loc : location), defname) ->
     let clamp n lim = if n < 0 || n > lim then lim else n in
     let line_number = clamp loc.line_number 0xfffff in
     let start_char = clamp loc.start_char 0xfff in
     let end_char = clamp loc.end_char 0xfff in
-    let filename_code = mtf_encode file_mtf loc.filename in
-    put_32 b (Int32.(logor (of_int line_number) (shift_left (of_int start_char) 20)));
-    put_16 b (end_char lor (filename_code lsl 12));
+    let filename_code = mtf_search file_mtf loc.filename in
+    mtf_swap defn_mtfs (if filename_code = mtf_length then
+                          mtf_length - 1 else filename_code);
+    let defname_code = mtf_search defn_mtfs.(0) defname in
+    let encoded =
+      Int64.(
+        logor (of_int line_number)
+       (logor (shift_left (of_int start_char) 20)
+       (logor (shift_left (of_int end_char) (20 + 8))
+       (logor (shift_left (of_int filename_code) (20 + 8 + 10))
+              (shift_left (of_int defname_code) (20 + 8 + 10 + 5)))))) in
+    put_32 b (Int64.to_int32 encoded);
+    put_16 b (Int64.(to_int (shift_right encoded 32)));
     if filename_code = mtf_length then
-      put_string b loc.filename)
+      put_string b loc.filename;
+    if defname_code = mtf_length then
+      put_string b defname)
 
-let get_backtrace_slot file_mtf b =
+let get_backtrace_slot file_mtf defn_mtfs b =
   let id = get_64 b in
   let nlocs = get_8 b in
   let locs = List.init nlocs (fun _ ->
-    let line, start_char =
-      let n = get_32 b in
-      Int32.(to_int (logand n 0xfffffl), to_int (shift_right n 20)) in
-    let end_char, filename_code =
-      let n = get_16 b in
-      n land 0xfff, n lsr 12 in
+    let low = get_32 b in
+    let high = get_16 b in
+    let encoded = Int64.(logor (shift_left (of_int high) 32)
+                           (logand (of_int32 low) 0xffffffffL)) in
+    let line, start_char, end_char, filename_code, defname_code =
+      Int64.(
+        to_int (logand 0xfffffL encoded),
+        to_int (logand 0xffL (shift_right encoded 20)),
+        to_int (logand 0x3ffL (shift_right encoded (20 + 8))),
+        to_int (logand 0x1fL (shift_right encoded (20 + 8 + 10))),
+        to_int (logand 0x1fL (shift_right encoded (20 + 8 + 10 + 5)))) in
     let filename =
       match filename_code with
       | n when n = mtf_length ->
         let s = get_string b in
-        mtf_new file_mtf s;
+        mtf_bump file_mtf;
+        mtf_swap defn_mtfs (mtf_length - 1);
+        file_mtf.(0) <- s;
         s
-      | n -> mtf_decode file_mtf n in
-    { line; start_char; end_char; filename }) in
+      | n ->
+        mtf_swap defn_mtfs n;
+        mtf_swap file_mtf n;
+        file_mtf.(0) in
+    let defname =
+      match defname_code with
+      | n when n = mtf_length ->
+        let s = get_string b in
+        mtf_bump defn_mtfs.(0);
+        defn_mtfs.(0).(0) <- s;
+        s
+      | n ->
+        mtf_swap defn_mtfs.(0) n;
+        defn_mtfs.(0).(0) in
+    (* Printf.fprintf stderr "%d %d %s %s\n" filename_code defname_code filename defname; *)
+    { line; start_char; end_char; filename; defname }) in
   (id, locs)
 
 let flush s =
@@ -452,7 +486,7 @@ let flush s =
     put_ctf_header b s.trace_info 0 0. 0. 0 0;
     while !i < s.new_locs_len && remaining b > max_location do
       put_event_header b Ev_location s.packet_times.t_start;
-      put_backtrace_slot b s.file_mtf s.new_locs.(!i);
+      put_backtrace_slot b s.file_mtf s.defn_mtfs s.new_locs.(!i);
       incr i
     done;
     let blen = b.pos in
@@ -657,6 +691,7 @@ let start_tracing ~sampling_rate ~filename =
       start_time = to_timestamp_64 now
     };
     file_mtf = create_mtf_table ();
+    defn_mtfs = Array.init mtf_length (fun _ -> create_mtf_table ());
     new_locs = [| |];
     new_locs_len = 0;
     (* FIXME magic size *)
@@ -755,7 +790,7 @@ let get_collect alloc_id b =
   let id = alloc_id - 1 - id_delta in
   Collect id
 
-let parse_packet_events file_mtf loc_table cache start_time hdrinfo b f =
+let parse_packet_events file_mtf defn_mtfs loc_table cache start_time hdrinfo b f =
   let alloc_id = ref (Int64.to_int hdrinfo.alloc_id_begin) in
   let last_time = ref 0L in
   while remaining b > 0 do
@@ -766,7 +801,7 @@ let parse_packet_events file_mtf loc_table cache start_time hdrinfo b f =
     let dt = Int64.(sub time start_time) in
     begin match ev with
     | Ev_location ->
-      let (id, loc) = get_backtrace_slot file_mtf b in
+      let (id, loc) = get_backtrace_slot file_mtf defn_mtfs b in
       (*Printf.printf "%3d _ _ location\n" (b.pos - last_pos);*)
       if Hashtbl.mem loc_table id then
         check_fmt "consistent location info" (Hashtbl.find loc_table id = loc)
@@ -805,6 +840,7 @@ let rec read_into fd buf off =
 let iter_trace {fd; loc_table; info = { start_time; _ } } f =
   let cache = create_reader_cache () in
   let file_mtf = create_mtf_table () in
+  let defn_mtfs = Array.init mtf_length (fun _ -> create_mtf_table ()) in
   Deps.reset_in fd;
   (* FIXME error handling *)
   let buf = Bytes.make (1 lsl 18) '\000' in
@@ -820,7 +856,7 @@ let iter_trace {fd; loc_table; info = { start_time; _ } } f =
     check_fmt "inter-packet alloc ID" (last_alloc_id = info.alloc_id_begin);
     let len = info.content_size in
     let b = if remaining b < len then refill b else b in
-    parse_packet_events file_mtf loc_table cache start_time info
+    parse_packet_events file_mtf defn_mtfs loc_table cache start_time info
       { b with pos_end = b.pos + len } f;
     go info.time_end info.alloc_id_end { b with pos = b.pos + len } in
   go 0L 0L { buf; pos = 0; pos_end = 0 }
