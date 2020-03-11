@@ -23,3 +23,10 @@
   (name count)
   (modules count)
   (libraries memtrace))
+
+(executable
+  (name hotspots)
+  (modules heavy_hitters hotspots)
+  (libraries memtrace))
+
+

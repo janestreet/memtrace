@@ -399,7 +399,7 @@ let put_backtrace_slot b file_mtf defn_mtfs (id, loc) =
       | None -> []
       | Some slot -> get_locations slot in
     let slot = convert_raw_backtrace_slot slot in
-    match Slot.location slot, Slot.defname slot with
+    match Slot.location slot, Slot.name slot with
     | None, _ -> tail
     | Some l, None -> (l, "??") :: tail
     | Some l, Some d -> (l,d) :: tail in
