@@ -9,11 +9,13 @@ let count filename target =
   let matched = Array.make 10_000 false in
   iter_trace trace (fun _time ev ->
     match ev with
-  | Alloc {obj_id=_; length=_; nsamples; is_major=_; common_prefix; new_suffix} ->
-    new_suffix |> List.iteri (fun i s ->
-      matched.(common_prefix + i) <- matches target (lookup_location trace s));
+  | Alloc {obj_id=_; length=_; nsamples; is_major=_; backtrace_buffer; backtrace_length; common_prefix} ->
+    for i = common_prefix to backtrace_length - 1 do
+      let s = backtrace_buffer.(i) in
+      matched.(i) <- matches target (lookup_location trace s)
+    done;
     let found = ref false in
-    for i = 0 to common_prefix + List.length new_suffix do
+    for i = 0 to backtrace_length - 1 do
       if matched.(i) then found := true;
     done;
     allocs := !allocs + nsamples;

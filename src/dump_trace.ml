@@ -1,20 +1,19 @@
 open Memtrace
 let dump filename =
   let trace = open_trace ~filename in
-  let last = ref [| |] in
   iter_trace trace (fun time ev ->
     Printf.printf "%010Ld " time;
     match ev with
-  | Alloc {obj_id; length; nsamples; is_major; common_prefix; new_suffix} ->
+  | Alloc {obj_id; length; nsamples; is_major; backtrace_buffer; backtrace_length; common_prefix} ->
     Printf.printf "%010d %s %d len=%d % 4d:" (obj_id :> int) (if is_major then "alloc_major" else "alloc") nsamples length common_prefix;
     let print_location ppf { filename; line; start_char; end_char; defname  } =
       Printf.fprintf ppf "%s@%s:%d:%d-%d" defname filename line start_char end_char in
-    let bt = Array.concat [Array.sub !last 0 common_prefix; Array.of_list new_suffix] in
-    last := bt;
-    bt |> Array.iter (fun s ->
+    for i = 0 to backtrace_length - 1 do
+      let s = backtrace_buffer.(i) in
       match lookup_location trace s with
       | [] -> Printf.printf " $%Ld" (s :> Int64.t)
-      | ls -> ls |> List.iter (Printf.printf " %a" print_location));
+      | ls -> ls |> List.iter (Printf.printf " %a" print_location)
+    done;
     Printf.printf "\n%!"
   | Promote id ->
     Printf.printf "%010d promote\n" (id :> int)

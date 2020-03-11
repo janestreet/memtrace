@@ -101,27 +101,25 @@ end)
 
 let count filename =
   let trace = open_trace ~filename in
-  let last = ref [| |] in
   let hh = HH.make 10000 in
   let seen = Func_tbl.create 100 in
   let locs = new_loc_table trace in
   let total_samples = ref 0 in
   iter_trace trace (fun _time ev ->
       match ev with
-      | Alloc {obj_id=_; length=_; nsamples; is_major=_; common_prefix; new_suffix} ->
-         let bt = Array.concat [Array.sub !last 0 common_prefix; Array.of_list new_suffix] in
-         last := bt;
-         let allocpt = add_loc locs bt.(Array.length bt - 1) in
+      | Alloc {obj_id=_; length=_; nsamples; is_major=_;
+               backtrace_buffer; backtrace_length; common_prefix=_} ->
+         let allocpt = add_loc locs backtrace_buffer.(backtrace_length - 1) in
          allocpt.alloc_count <- allocpt.alloc_count + nsamples;
          Func_tbl.clear seen;
-         for i' = 0 to Array.length bt - 2 do
-           let i = Array.length bt - 2 - i' in
-           let b = (add_loc locs bt.(i)).func in
+         for i' = 0 to backtrace_length - 2 do
+           let i = backtrace_length - 2 - i' in
+           let b = (add_loc locs backtrace_buffer.(i)).func in
            if not (Func_tbl.mem seen b) then begin
                Func_tbl.add seen b ();
                b.total_count <- b.total_count + nsamples;
                b.n_allocs <- b.n_allocs + 1;
-               b.total_dist_to_alloc <- b.total_dist_to_alloc + (Array.length bt - 1 - i);
+               b.total_dist_to_alloc <- b.total_dist_to_alloc + (backtrace_length - 1 - i);
                HH.add hh (b, allocpt.func)
              end
          done;

@@ -184,11 +184,13 @@ type cache_bucket = int  (* 0 to cache_size - 1 *)
 type memtrace_reader_cache = {
   cache_loc : Int64.t array;
   cache_pred : int array;
+  mutable last_backtrace : Int64.t array;
 }
 
 let create_reader_cache () =
   { cache_loc = Array.make cache_size 0L;
-    cache_pred = Array.make cache_size 0 }
+    cache_pred = Array.make cache_size 0;
+    last_backtrace = [| |] }
 
 type mtf_table = string array
 
@@ -527,9 +529,22 @@ let begin_event s ev =
   put_event_header s.packet ev now
 
 
-let get_coded_backtrace { cache_loc ; cache_pred } b =
-  let rec decode pred acc = function
-    | 0 -> List.rev acc
+let get_coded_backtrace ({ cache_loc ; cache_pred; _ } as cache) pos b =
+  assert (pos <= Array.length cache.last_backtrace);
+  let put_bbuf bbuf pos x =
+    assert (pos <= Array.length bbuf);
+    if pos < Array.length bbuf then begin
+      bbuf.(pos) <- x;
+      bbuf
+    end else begin
+      let new_size = Array.length bbuf * 2 in
+      let new_size = if new_size < 32 then 32 else new_size in
+      let new_bbuf = Array.make new_size x in
+      Array.blit bbuf 0 new_bbuf 0 pos;
+      new_bbuf
+    end in
+  let rec decode pred bbuf pos = function
+    | 0 -> (bbuf, pos)
     | i ->
       let codeword = get_16 b in
       let bucket = codeword lsr 1 and tag = codeword land 1 in
@@ -537,20 +552,28 @@ let get_coded_backtrace { cache_loc ; cache_pred } b =
       if tag = 0 then begin
         (* cache hit *)
         let ncorrect = get_8 b in
-        predict bucket (cache_loc.(bucket) :: acc) (i - 1) ncorrect
+        predict bucket
+          (put_bbuf bbuf pos cache_loc.(bucket)) (pos + 1)
+          (i - 1) ncorrect
       end else begin
         (* cache miss *)
         let lit = get_64 b in
         cache_loc.(bucket) <- lit;
-        decode bucket (lit :: acc) (i - 1)
+        decode bucket
+          (put_bbuf bbuf pos lit) (pos + 1)
+          (i - 1)
       end
-  and predict pred acc i = function
-    | 0 -> decode pred acc i
+  and predict pred bbuf pos i = function
+    | 0 -> decode pred bbuf pos i
     | n ->
       let pred' = cache_pred.(pred) in
-      predict pred' (cache_loc.(pred') :: acc) i (n-1) in
+      predict pred'
+        (put_bbuf bbuf pos cache_loc.(pred')) (pos + 1)
+        i (n-1) in
   let n = get_16 b in
-  decode 0 [] n
+  let (bbuf, pos) = decode 0 cache.last_backtrace pos n in
+  cache.last_backtrace <- bbuf;
+  (bbuf, pos)
 
 let log_alloc s is_major callstack length n_samples =
   begin_event s Ev_alloc;
@@ -648,18 +671,10 @@ let log_alloc s is_major callstack length n_samples =
    | None -> ()
    | Some c ->
      let b' = { buf = b.buf; pos = bt_off; pos_end = b.pos } in
-     let decoded_suff = get_coded_backtrace c b' in
+     let decoded, decoded_len = get_coded_backtrace c common_pfx_len b' in
      assert (remaining b' = 0);
-     let last = Array.map Int64.of_int last in
-     let common_pref =
-       Array.sub last (Array.length last - common_pfx_len) common_pfx_len |> Array.to_list |> List.rev in
-     let decoded = common_pref @ decoded_suff in
-     if decoded <> (raw_stack |> Array.map Int64.of_int |> Array.to_list |> List.rev) then begin
-     last |> Array.to_list |> List.rev |> List.iter (Printf.printf " %08Lx"); Printf.printf "\n";
-     raw_stack |> Array.to_list |> List.rev |> List.iter (Printf.printf " %08x"); Printf.printf "\n";
-     decoded |> List.iter (Printf.printf " %08Lx"); Printf.printf " !\n";
-     List.init common_pfx_len (fun _ -> ".") |> List.iter (Printf.printf " %8s");
-        decoded_suff |> List.iter (Printf.printf " %08Lx"); Printf.printf "\n%!";
+     if (Array.sub decoded 0 decoded_len) <> (raw_stack |> Array.map Int64.of_int |> Array.to_list |> List.rev |> Array.of_list) then begin
+     Array.sub decoded 0 decoded_len |> Array.iter (Printf.printf " %08Lx"); Printf.printf " !\n";
      failwith "bad coded backtrace"
      end);
 
@@ -762,8 +777,9 @@ type event =
     length : int;
     nsamples : int;
     is_major : bool;
+    backtrace_buffer : location_code array;
+    backtrace_length : int;
     common_prefix : int;
-    new_suffix : location_code list;
   }
   | Promote of obj_id
   | Collect of obj_id
@@ -773,8 +789,10 @@ let get_alloc cache alloc_id b =
   let nsamples = get_vint b in
   let is_major = get_8 b |> function 0 -> false | _ -> true in
   let common_prefix = get_vint b in
-  let new_suffix = get_coded_backtrace cache b in
-  Alloc { obj_id = alloc_id; length; nsamples; is_major; common_prefix; new_suffix }
+  let (backtrace_buffer, backtrace_length) =
+    get_coded_backtrace cache common_prefix b in
+  Alloc { obj_id = alloc_id; length; nsamples; is_major;
+          backtrace_buffer; backtrace_length; common_prefix }
 
 (* FIXME: overflow, failure to bump end time *)
 

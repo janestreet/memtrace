@@ -41,8 +41,14 @@ type event =
     length : int;
     nsamples : int;
     is_major : bool;
+    (* NB: this is a mutable buffer, reused between events.
+       If you want to store backtraces, you must copy them
+       from this buffer using:
+       [Array.sub backtrace_buffer 0 backtrace_length] *)
+    backtrace_buffer : location_code array;
+    backtrace_length : int;
+    (* A prefix of this length has not changed since the last event *)
     common_prefix : int;
-    new_suffix : location_code list;
   }
   | Promote of obj_id
   | Collect of obj_id

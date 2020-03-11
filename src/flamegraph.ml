@@ -5,7 +5,6 @@ type summary = {
 }
 
 let summary filename =
-  let last = ref [| |] in
   let summary = { samples = 0; subsums = StrTbl.create 20 } in
   let count (filenames, nsamples) =
     let lastsum =
@@ -26,15 +25,14 @@ let summary filename =
   let trace = open_trace ~filename in
   iter_trace trace (fun _time ev ->
     match ev with
-  | Alloc {obj_id; length=_; nsamples; is_major=_; common_prefix; new_suffix} ->
-    let bt = Array.concat [Array.sub !last 0 common_prefix; Array.of_list new_suffix] in
-    last := bt;
+  | Alloc {obj_id; length=_; nsamples; is_major=_;
+           backtrace_buffer; backtrace_length; common_prefix=_ } ->
     let str_of_location l =
       l.defname
       (*Printf.sprintf "%s:%d" filename line*) in
     let _print_location ppf { filename; line; start_char; end_char; _  } =
       Printf.fprintf ppf "%s:%d:%d-%d" filename line start_char end_char in
-    let filenames = List.concat (bt |> Array.map (fun l ->
+    let filenames = List.concat (Array.sub backtrace_buffer 0 backtrace_length |> Array.map (fun l ->
       let locs = lookup_location trace l in
       List.map (fun ({ filename=_; _ } as l) -> str_of_location l) locs) |> Array.to_list) in
     let seen = StrTbl.create 10 in
@@ -52,7 +50,7 @@ let summary filename =
           true
         end) in
     Hashtbl.add allocs obj_id (first_filenames, nsamples);
-    sz := !sz + common_prefix + List.length new_suffix;
+    sz := !sz + backtrace_length;
     incr nallocs;
     if true then count (first_filenames, nsamples);
     (* count (first_filenames, nsamples) *)
