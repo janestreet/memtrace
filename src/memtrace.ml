@@ -227,7 +227,20 @@ type tracer = {
   mutable packet : buffer;
 
   mutable stopped : bool;
+
+  mutable locked : bool;
 }
+
+let[@inline never] lock_tracer s =
+  (* This is a maximally unfair spinlock. *)
+  (* FIXME: correctness rests on dubious assumptions of atomicity *)
+  (* if s.locked then Printf.fprintf stderr "contention\n%!"; *)
+  while s.locked do Thread.yield () done;
+  s.locked <- true
+
+let[@inline never] unlock_tracer s =
+  assert (s.locked);
+  s.locked <- false
 
 let log_new_loc s loc =
   let alen = Array.length s.new_locs in
@@ -715,7 +728,7 @@ let start_tracing ~sampling_rate ~filename =
     cache = Array.make cache_size 0;
     cache_date = Array.make cache_size 0;
     cache_next = Array.make cache_size 0;
-    debug_cache = Some (create_reader_cache ());
+    debug_cache = None (*Some (create_reader_cache ())*);
 
     last_callstack = [| |];
     next_alloc_id = 0;
@@ -724,17 +737,31 @@ let start_tracing ~sampling_rate ~filename =
     packet = mkbuffer (Bytes.make 8000 '\102');
 
     stopped = false;
+    locked = false
   } in
   put_ctf_header s.packet s.trace_info 0 0. 0. 0 0;
   Deps.memprof_start
     ~callstack_size:max_int
     ~minor_alloc_callback:(fun info ->
-      log_alloc s false info.callstack info.size info.n_samples)
+      lock_tracer s;
+      let r = log_alloc s false info.callstack info.size info.n_samples in
+      unlock_tracer s; r)
     ~major_alloc_callback:(fun info ->
-      log_alloc s true info.callstack info.size info.n_samples)
-    ~promote_callback:(fun id -> log_promote s id)
-    ~minor_dealloc_callback:(fun id -> log_collect s id)
-    ~major_dealloc_callback:(fun id -> log_collect s id)
+      lock_tracer s;
+      let r = log_alloc s true info.callstack info.size info.n_samples in
+      unlock_tracer s; r)
+    ~promote_callback:(fun id ->
+      lock_tracer s;
+      let r = log_promote s id in
+      unlock_tracer s; r)
+    ~minor_dealloc_callback:(fun id ->
+      lock_tracer s;
+      let r = log_collect s id in
+      unlock_tracer s; r)
+    ~major_dealloc_callback:(fun id ->
+      lock_tracer s;
+      let r = log_collect s id in
+      unlock_tracer s; r)
     ~sampling_rate
     ();
   s
