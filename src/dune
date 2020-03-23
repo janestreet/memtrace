@@ -1,32 +1,4 @@
 (library
  (name memtrace)
  (modules memtrace)
- (libraries unix))
-
-(executable
-  (name flamegraph)
-  (modules flamegraph)
-  (libraries memtrace))
-
-(executable
-  (name lists_and_sets)
-  (modules lists_and_sets)
-  (libraries memtrace))
-
-(executable
-  (name dump_trace)
-  (modules dump_trace)
-  (libraries memtrace))
-
-
-(executable
-  (name count)
-  (modules count)
-  (libraries memtrace))
-
-(executable
-  (name hotspots)
-  (modules heavy_hitters hotspots)
-  (libraries memtrace))
-
-
+ (libraries unix threads))

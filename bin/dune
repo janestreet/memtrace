@@ -1,0 +1,3 @@
+(executables
+  (names flamegraph lists_and_sets dump_trace count hotspots)
+  (libraries memtrace))

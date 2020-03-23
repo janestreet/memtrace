@@ -1,5 +1,82 @@
 open Memtrace
 
+module Heavy_hitters (A : Hashtbl.HashedType) : sig
+  type t
+  val make : int -> t
+  val add : t -> A.t -> unit
+  val length : t -> int
+  val iter : t -> (A.t -> int -> int -> unit) -> unit
+end = struct
+  module Tbl = Hashtbl.Make(A)
+
+  type counter = {
+    (* (hits - misses) is the usual Misra-Gries summary *)
+    mutable hits : int;
+    mutable misses : int;
+    (* number of elements added before this one (including duplicates) *)
+    added_before : int;
+    (* number of elements skipped before this one was added *)
+    skipped_before : int;
+  }
+
+  (*let upper_bound t c =
+    c.skipped_before
+   *)
+  type t = {
+    k : int;
+    tbl : counter Tbl.t;
+    mutable len : int;
+    mutable added : int;
+    mutable skipped : int;
+  }
+
+  let make k =
+    {
+      k;
+      tbl = Tbl.create k;
+      len = 0;
+      added = 0;
+      skipped = 0;
+    }
+
+  let _check t =
+    let hits = ref 0 in
+    t.tbl |> Tbl.iter (fun _k c -> hits := !hits + c.hits);
+    assert (t.len = Tbl.length t.tbl);
+    assert (!hits + t.skipped = t.added);
+    ()
+
+  let add t x =
+  (*  check t;*)
+    begin match Tbl.find_opt t.tbl x with
+    | Some c ->
+       c.hits <- c.hits + 1
+    | None ->
+       if t.len < t.k then begin
+         t.len <- t.len + 1;
+         Tbl.add t.tbl x { hits = 1; misses = 0; added_before = t.added; skipped_before = t.skipped }
+       end else begin
+         t.skipped <- t.skipped + 1;
+         t.tbl |> Tbl.filter_map_inplace (fun _k c ->
+           c.misses <- c.misses + 1;
+           if c.hits > c.misses then Some c else begin
+             t.len <- t.len - 1;
+             t.skipped <- t.skipped + c.hits;
+             None
+           end)
+       end
+    end;
+    t.added <- t.added + 1
+
+  let length t = t.added
+
+  let iter t f =
+    t.tbl |> Tbl.iter (fun x c -> f x c.hits c.skipped_before)
+
+end
+
+
+
 module Loc_tbl = Hashtbl.Make (struct
   type t = location_code
   let hash (x : location_code) = Int64.(shift_right (mul (x :> int64) 984372984721L) 17 |> to_int)
@@ -85,7 +162,7 @@ let add_loc t loc =
      func.locs <- entry :: func.locs;
      entry
 
-module HH = Heavy_hitters.Make(struct
+module HH = Heavy_hitters(struct
   type t = func * func
   let hash ((a, b) : t) =
     a.id * 1231441 + b.id * 3821
@@ -126,11 +203,29 @@ let count filename =
          total_samples := !total_samples + nsamples
       | Promote _ -> ()
       | Collect _ -> ());
+  let tinfo = trace_info trace in
   close_trace trace;
   let total_samples = !total_samples in
+  let wordsize = 8. in  (* FIXME: store this in the trace *)
+  let print_bytes ppf = function
+    | n when n < 100. ->
+      Printf.fprintf ppf "%4.0f B" n
+    | n when n < 100. *. 1024. ->
+      Printf.fprintf ppf "%4.1f kB" (n /. 1024.)
+    | n when n < 100. *. 1024. *. 1024. ->
+      Printf.fprintf ppf "%4.1f MB" (n /. 1024. /. 1024.)
+    | n when n < 100. *. 1024. *. 1024. *. 1024. ->
+      Printf.fprintf ppf "%4.1f GB" (n /. 1024. /. 1024. /. 1024.)
+    | n ->
+      Printf.fprintf ppf "%4.1f TB" (n /. 1024. /. 1024. /. 1024. /. 1024.) in
+  Printf.printf "Trace for %s [%ld]:\n   %d samples of %a allocations\n\n"
+    tinfo.executable_name tinfo.pid
+    total_samples
+    print_bytes (float_of_int total_samples /. tinfo.sample_rate *. wordsize);
   let hot_allocs = Func_tbl.create 100 in
   HH.iter hh (fun (fn,al) d1 _d2 ->
-      if 1000 * direct_allocs al / total_samples > 5 then begin
+      let alloc_prop = float_of_int (direct_allocs al) /. float_of_int total_samples in
+      if alloc_prop > 0.005 then begin
           let callers =
             match Func_tbl.find hot_allocs al with
             | c -> c
@@ -138,47 +233,51 @@ let count filename =
                let c = ref [] in
                Func_tbl.add hot_allocs al c;
                c in
-          let pair_freq = d1 in
-          let tot_freq = total_allocs fn in
-          if 100 * pair_freq / tot_freq > 20 then begin
-              callers := (fn, pair_freq) :: !callers
+          let pair_freq = float_of_int d1 in
+          let fn_freq = float_of_int (total_allocs fn) in
+          if pair_freq /. fn_freq > max 0.10 (alloc_prop *. 1.2)
+          && pair_freq /. float_of_int total_samples > 0.005 then begin
+              callers := (fn, d1) :: !callers
             end
         end);
   let hot_allocs = Func_tbl.fold (fun al c acc -> (al, !c) :: acc) hot_allocs [] in
   let hot_allocs = List.sort (fun (al,_) (al',_) -> compare (direct_allocs al') (direct_allocs al)) hot_allocs in
   hot_allocs |> List.iter (fun (al, callers) ->
-                    let freq = float_of_int (direct_allocs al) /. float_of_int total_samples in 
-                    Printf.printf "%4.1f%% %s" (100. *. freq) al.name;
-                    Printf.printf " (%s:" al.filename;
-                    let printed = ref 0 in
-                    let locs = al.locs |> List.sort (fun l1 l2 -> compare l2.alloc_count l1.alloc_count) in
-                    locs |> List.iter (fun { line; start_ch; end_ch; alloc_count; func=_ } ->
-                                if alloc_count > 0 then begin
-                                    begin match !printed with
-                                    | n when n < 3 ->
-                                       if n > 0 then Printf.printf ", ";
-                                       Printf.printf "%d:%d-%d" line start_ch end_ch
-                                    | 3 -> Printf.printf "..."
-                                    | _ -> () end;
-                                    incr printed
-                                  end);
-                    Printf.printf ")\n";
-                    let first_caller = ref true in
+    let freq = float_of_int (direct_allocs al) /. float_of_int total_samples in
+    let bytes = float_of_int (direct_allocs al) /. tinfo.sample_rate *. wordsize in
+    Printf.printf "%a (%4.1f%%) at %s" print_bytes bytes (100. *. freq) al.name;
+    Printf.printf " (%s:" al.filename;
+    let printed = ref 0 in
+    let locs = al.locs |> List.sort (fun l1 l2 -> compare l2.alloc_count l1.alloc_count) in
+    locs |> List.iter (fun { line; start_ch; end_ch; alloc_count; func=_ } ->
+      if alloc_count > 0 then begin
+          begin match !printed with
+          | n when n < 3 ->
+             if n > 0 then Printf.printf ", ";
+             Printf.printf "%d:%d-%d" line start_ch end_ch
+          | 3 -> Printf.printf "..."
+          | _ -> () end;
+          incr printed
+        end);
+    Printf.printf ")\n";
+    let first_caller = ref true in
 
-                    let callers = List.sort (fun (c,f) (c',f') ->
-                                      (*compare (avg_dist_to_alloc c) (avg_dist_to_alloc c')*)
-                                      compare (float_of_int f' /. float_of_int (total_allocs c')) (float_of_int f /. float_of_int (total_allocs c))
-                                    ) callers in
-                    callers |> List.iter (fun (caller,freq) ->
-                                   let rfreq = float_of_int freq /. float_of_int (total_allocs caller) in
-                                   let pfreq = float_of_int freq /. float_of_int total_samples in
-                                   if float_of_int (total_allocs caller) /. float_of_int total_samples > 0.005 then begin
-                                     if !first_caller then Printf.printf "      accounting for:\n";
-                                     first_caller := false;
-                                     Printf.printf " %3.0f%% of %s (%.1f%%)\n" (100. *. rfreq) caller.name (100. *. pfreq)
-                                   end);
-                    Printf.printf "\n")
-      
+    let callers = List.sort (fun (_c,f) (_c',f') ->
+      (*compare (avg_dist_to_alloc c) (avg_dist_to_alloc c')*)
+      (* compare (float_of_int f' /. float_of_int (total_allocs c')) (float_of_int f /. float_of_int (total_allocs c)) *)
+      compare f' f
+    ) callers in
+    callers |> List.iter (fun (caller,freq) ->
+      let rfreq = float_of_int freq /. float_of_int (total_allocs caller) in
+      (* let pfreq = float_of_int freq /. float_of_int total_samples in *)
+      let bytes = float_of_int freq /. tinfo.sample_rate *. wordsize in
+      if float_of_int (total_allocs caller) /. float_of_int total_samples > 0.005 then begin
+        if !first_caller then Printf.printf "      including:\n";
+        first_caller := false;
+        Printf.printf "    %a via %s (%.0f%% of this)\n" print_bytes bytes caller.name (100. *. rfreq)
+      end);
+    Printf.printf "\n")
+
 
 (*
     let pair_freq = d1 in
