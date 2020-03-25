@@ -135,16 +135,22 @@ let new_loc_table trace =
     trace;
     next_id = 0 }
 
-let add_loc t loc =
+let rec describe_location ?(max_discard=2) trace buf i =
+  match lookup_location trace buf.(i) with
+  | [] when i > 0 && max_discard > 0 ->
+    describe_location ~max_discard:(max_discard - 1) trace buf (i-1)
+  | [] -> "??", Printf.sprintf "#%Lx" (buf.(i) :> int64), 0, 0, 0
+  | locs ->
+    let l = (List.nth locs (List.length locs - 1)) in
+    l.filename, l.defname, l.line, l.start_char, l.end_char
+
+let add_loc t buf i =
+  let loc = buf.(i) in
   match Loc_tbl.find t.entries loc with
   | e -> e
   | exception Not_found ->
      let filename, funcname, line, start_ch, end_ch =
-       match lookup_location t.trace loc with
-       | [] -> "??", Printf.sprintf "#%Lx" (loc :> int64), 0, 0, 0
-       | locs ->
-          let l = (List.nth locs (List.length locs - 1)) in
-          l.filename, l.defname, l.line, l.start_char, l.end_char in
+       describe_location t.trace buf i in
      let func =
        match Hashtbl.find t.funcs (filename, funcname) with
        | func ->
@@ -186,12 +192,12 @@ let count filename =
       match ev with
       | Alloc {obj_id=_; length=_; nsamples; is_major=_;
                backtrace_buffer; backtrace_length; common_prefix=_} ->
-         let allocpt = add_loc locs backtrace_buffer.(backtrace_length - 1) in
+         let allocpt = add_loc locs backtrace_buffer (backtrace_length - 1) in
          allocpt.alloc_count <- allocpt.alloc_count + nsamples;
          Func_tbl.clear seen;
          for i' = 0 to backtrace_length - 2 do
            let i = backtrace_length - 2 - i' in
-           let b = (add_loc locs backtrace_buffer.(i)).func in
+           let b = (add_loc locs backtrace_buffer i).func in
            if not (Func_tbl.mem seen b) then begin
                Func_tbl.add seen b ();
                b.total_count <- b.total_count + nsamples;
