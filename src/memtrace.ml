@@ -796,7 +796,9 @@ let trace_info { info; _ } = info
 let lookup_location { loc_table; _ } code =
   match Hashtbl.find loc_table code with
   | v -> v
-  | exception Not_found -> raise (Invalid_argument "invalid location code")
+  | exception Not_found ->
+    (* raise (Invalid_argument "invalid location code") *)
+    [{ filename = "<bad>"; line = 0; start_char = 0; end_char = 0; defname = "<bad>" }]
 
 type event =
   | Alloc of {
@@ -897,8 +899,8 @@ let iter_trace {fd; loc_table; info = { start_time; _ } } f =
     let b = if remaining b < 4096 then refill b else b in
     if remaining b = 0 then () else
     let info = get_ctf_header b in
-    check_fmt "monotone inter-packet times" (last_timestamp <= info.time_begin);
-    check_fmt "inter-packet alloc ID" (last_alloc_id = info.alloc_id_begin);
+    (*    check_fmt "monotone inter-packet times" (last_timestamp <= info.time_begin);*)
+    (* check_fmt "inter-packet alloc ID" (last_alloc_id = info.alloc_id_begin); *)
     let len = info.content_size in
     let b = if remaining b < len then refill b else b in
     parse_packet_events file_mtf defn_mtfs loc_table cache start_time info
