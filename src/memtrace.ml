@@ -797,8 +797,8 @@ let lookup_location { loc_table; _ } code =
   match Hashtbl.find loc_table code with
   | v -> v
   | exception Not_found ->
-    (* raise (Invalid_argument "invalid location code") *)
-    [{ filename = "<bad>"; line = 0; start_char = 0; end_char = 0; defname = "<bad>" }]
+    raise (Invalid_argument "invalid location code")
+(*    [{ filename = "<bad>"; line = 0; start_char = 0; end_char = 0; defname = "<bad>" }]*)
 
 type event =
   | Alloc of {
@@ -813,13 +813,29 @@ type event =
   | Promote of obj_id
   | Collect of obj_id
 
-let get_alloc cache alloc_id b =
+let get_alloc ~parse_backtraces cache alloc_id b =
+  ignore (parse_backtraces);
   let length = get_vint b in
   let nsamples = get_vint b in
   let is_major = get_8 b |> function 0 -> false | _ -> true in
   let common_prefix = get_vint b in
   let (backtrace_buffer, backtrace_length) =
-    get_coded_backtrace cache common_prefix b in
+    if parse_backtraces then
+      get_coded_backtrace cache common_prefix b
+    else begin
+      let n = get_16 b in
+      for _ = 1 to n do
+        let codeword = get_16 b in
+        if codeword land 1 = 0 then begin
+          (* hit *)
+          let _ = get_8 b in ()
+        end else begin
+          (* miss *)
+          let _ = get_64 b in ()
+        end
+      done;
+      [| |], 0
+    end in
   Alloc { obj_id = alloc_id; length; nsamples; is_major;
           backtrace_buffer; backtrace_length; common_prefix }
 
@@ -837,7 +853,7 @@ let get_collect alloc_id b =
   let id = alloc_id - 1 - id_delta in
   Collect id
 
-let parse_packet_events file_mtf defn_mtfs loc_table cache start_time hdrinfo b f =
+let parse_packet_events ~parse_backtraces file_mtf defn_mtfs loc_table cache start_time hdrinfo b f =
   let alloc_id = ref (Int64.to_int hdrinfo.alloc_id_begin) in
   let last_time = ref 0L in
   while remaining b > 0 do
@@ -855,7 +871,7 @@ let parse_packet_events file_mtf defn_mtfs loc_table cache start_time hdrinfo b 
       else
         Hashtbl.add loc_table id loc
     | Ev_alloc ->
-      let info = get_alloc cache !alloc_id b in
+      let info = get_alloc ~parse_backtraces cache !alloc_id b in
       incr alloc_id;
       (*Printf.printf "%3d " (b.pos - last_pos);*)
       f dt info
@@ -884,7 +900,7 @@ let rec read_into fd buf off =
       read_into fd buf (off + n)
   end
 
-let iter_trace {fd; loc_table; info = { start_time; _ } } f =
+let iter_trace {fd; loc_table; info = { start_time; _ } } ?(parse_backtraces=true) f =
   let cache = create_reader_cache () in
   let file_mtf = create_mtf_table () in
   let defn_mtfs = Array.init mtf_length (fun _ -> create_mtf_table ()) in
@@ -899,13 +915,16 @@ let iter_trace {fd; loc_table; info = { start_time; _ } } f =
     let b = if remaining b < 4096 then refill b else b in
     if remaining b = 0 then () else
     let info = get_ctf_header b in
-    (*    check_fmt "monotone inter-packet times" (last_timestamp <= info.time_begin);*)
-    (* check_fmt "inter-packet alloc ID" (last_alloc_id = info.alloc_id_begin); *)
-    let len = info.content_size in
-    let b = if remaining b < len then refill b else b in
-    parse_packet_events file_mtf defn_mtfs loc_table cache start_time info
-      { b with pos_end = b.pos + len } f;
-    go info.time_end info.alloc_id_end { b with pos = b.pos + len } in
+    if (last_timestamp <= info.time_begin) && (last_alloc_id = info.alloc_id_begin) then begin
+      let len = info.content_size in
+      let b = if remaining b < len then refill b else b in
+      parse_packet_events ~parse_backtraces file_mtf defn_mtfs loc_table cache start_time info
+        { b with pos_end = b.pos + len } f;
+      go info.time_end info.alloc_id_end { b with pos = b.pos + len }
+    end else begin
+      Printf.fprintf stderr "skipping bad packet at id %Ld %Ld-%Ld\n%!" last_alloc_id info.alloc_id_begin info.alloc_id_end;
+      go last_timestamp last_alloc_id { b with pos = b.pos + info.content_size }
+    end in
   go 0L 0L { buf; pos = 0; pos_end = 0 }
 
 let open_trace ~filename =

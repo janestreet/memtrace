@@ -53,6 +53,6 @@ type event =
   | Promote of obj_id
   | Collect of obj_id
 
-val iter_trace : trace -> (timedelta -> event -> unit) -> unit
+val iter_trace : trace -> ?parse_backtraces:bool -> (timedelta -> event -> unit) -> unit
 
 val close_trace : trace -> unit
