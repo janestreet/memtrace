@@ -851,8 +851,6 @@ module Loc_hitters = Substring_heavy_hitters(Location)
 
 module Loc_tbl = Hashtbl.Make(Location)
 
-let error = 0.001
-
 let wordsize = 8.  (* FIXME: store this in the trace *)
 
 let print_bytes ppf = function
@@ -910,7 +908,7 @@ let print_report trace ppf (hitters, total) =
     print_bytes (float_of_int total /. tinfo.sample_rate *. wordsize)
     (print_hitters trace tinfo total) hitters
 
-let count ~frequency ~filename =
+let count ~frequency ~error ~filename =
   let trace = open_trace ~filename in
   let shh = Loc_hitters.create ~error in
   let seen = Loc_tbl.create 100 in
@@ -935,18 +933,20 @@ let count ~frequency ~filename =
   Format.printf "%a" (print_report trace) results;
   close_trace trace
 
-let default_frequency = 0.01
+let default_frequency = 0.03
+
+let default_error = 0.01
 
 let () =
   if Array.length Sys.argv = 2 then begin
-    count ~frequency:default_frequency ~filename:Sys.argv.(1)
-  end else if Array.length Sys.argv = 3 then begin
-    match Float.of_string Sys.argv.(2) with
-    | frequency -> count ~frequency ~filename:Sys.argv.(1)
+    count ~frequency:default_frequency ~error:default_error ~filename:Sys.argv.(1)
+  end else if Array.length Sys.argv = 4 then begin
+    match Float.of_string Sys.argv.(2), Float.of_string Sys.argv.(3) with
+    | frequency, error -> count ~frequency ~error ~filename:Sys.argv.(1)
     | exception Failure _ ->
-        Printf.fprintf stderr "Usage: %s <trace file> [frequency]\n"
+        Printf.fprintf stderr "Usage: %s <trace file> [frequency error]\n"
           Sys.executable_name
   end else begin
-    Printf.fprintf stderr "Usage: %s <trace file> [frequency]\n"
+    Printf.fprintf stderr "Usage: %s <trace file> [frequency error]\n"
       Sys.executable_name
   end
