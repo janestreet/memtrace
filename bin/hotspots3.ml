@@ -110,21 +110,23 @@ end = struct
         mutable kind : kind;
         mutable count : int;
         mutable delta : int;
-        mutable max_child_delta : int;
-        mutable children : t Tbl.t;
-        mutable incoming : int;
-        mutable descendents_count : int;
-        mutable heavy_descendents_count : int;
-        mutable next : t;
-        mutable previous: t; }
+        mutable max_child_delta : int; }
 
     and kind =
       | Dummy
-      | Front_sentinal
-      | Back_sentinal
-      | Root
-      | Branch
-      | Leaf
+      | Front_sentinal of { mutable next : t }
+      | Back_sentinal of { mutable previous : t }
+      | Root of { children : t Tbl.t; }
+      | Branch of
+          { children : t Tbl.t;
+            mutable incoming : int;
+            mutable descendents_count : int;
+            mutable heavy_descendents_count : int; }
+      | Leaf of { mutable next : t; mutable previous: t; }
+      | Suffix_leaf of
+          { mutable incoming : int;
+            mutable descendents_count : int;
+            mutable heavy_descendents_count : int; }
 
     type queue =
       { front : t;
@@ -133,8 +135,6 @@ end = struct
     let same t1 t2 = t1 == t2
 
     let dummy_array = [||]
-
-    let dummy_table = Tbl.create 0
 
     let dummy =
       let edge_array = dummy_array in
@@ -145,16 +145,10 @@ end = struct
       let count = 0 in
       let delta = 0 in
       let max_child_delta = 0 in
-      let children = dummy_table in
-      let incoming = 0 in
-      let descendents_count = 0 in
-      let heavy_descendents_count = 0 in
       let rec t =
         { edge_array; edge_start; edge_len; edge_key;
           parent = t; suffix_link = t; kind;
-          count; delta; max_child_delta;
-          children; incoming; descendents_count;
-          heavy_descendents_count; next = t; previous = t; }
+          count; delta; max_child_delta; }
       in
       t
 
@@ -171,124 +165,156 @@ end = struct
       let edge_start = 0 in
       let edge_len = 0 in
       let edge_key = X.dummy in
-      let kind = Root in
+      let children = Tbl.create 37 in
+      let kind = Root { children } in
       let count = 0 in
       let delta = 0 in
       let max_child_delta = 0 in
-      let children = Tbl.create 37 in
-      let incoming = 0 in
-      let descendents_count = 0 in
-      let heavy_descendents_count = 0 in
-      let next = dummy in
-      let previous = dummy in
       let rec node =
         { edge_array; edge_start; edge_len; edge_key;
           parent = node; suffix_link = node; kind;
-          count; delta; max_child_delta;
-          children; incoming; descendents_count;
-          heavy_descendents_count; next; previous; }
+          count; delta; max_child_delta }
       in
       node
 
+    let next t =
+      match t.kind with
+      | Dummy | Back_sentinal _ | Suffix_leaf _ | Root _ | Branch _ ->
+          assert false
+      | Front_sentinal { next; _ } | Leaf { next; _ } -> next
+
+    let previous t =
+      match t.kind with
+      | Dummy | Front_sentinal _ | Suffix_leaf _ | Root _ | Branch _ ->
+          assert false
+      | Back_sentinal { previous; _ } | Leaf { previous; _ } -> previous
+
     let set_next t ~next =
       match t.kind with
-      | Dummy | Back_sentinal | Root | Branch ->
+      | Dummy | Back_sentinal _ | Suffix_leaf _ | Root _ | Branch _ ->
           assert false
-      | Front_sentinal | Leaf -> t.next <- next
+      | Front_sentinal k -> k.next <- next
+      | Leaf k -> k.next <- next
 
     let set_previous t ~previous =
       match t.kind with
-      | Dummy | Front_sentinal | Root | Branch ->
+      | Dummy | Front_sentinal _ | Suffix_leaf _ | Root _ | Branch _ ->
           assert false
-      | Back_sentinal | Leaf -> t.previous <- previous
+      | Back_sentinal k -> k.previous <- previous
+      | Leaf k -> k.previous <- previous
+
+    let set_child ~parent ~key ~child =
+      match parent.kind with
+      | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
+      | Leaf { next; previous } ->
+          set_previous next ~previous;
+          set_next previous ~next;
+          let incoming = 1 in
+          let children = Tbl.create 1 in
+          Tbl.add children key child;
+          let descendents_count = 0 in
+          let heavy_descendents_count = 0 in
+          let new_kind =
+            Branch { children; incoming;
+                     descendents_count; heavy_descendents_count }
+          in
+          parent.kind <- new_kind
+      | Suffix_leaf { incoming; descendents_count; heavy_descendents_count } ->
+          let incoming = incoming + 1 in
+          let children = Tbl.create 1 in
+          Tbl.add children key child;
+          let new_kind =
+            Branch { children; incoming;
+                     descendents_count; heavy_descendents_count }
+          in
+          parent.kind <- new_kind
+      | Root { children } -> Tbl.replace children key child
+      | Branch ({ children; incoming; _ } as k) ->
+          Tbl.replace children key child;
+          k.incoming <- incoming + 1
 
     let convert_to_leaf ~queue t =
       let next = queue.back in
-      let previous = queue.back.previous in
-      t.kind <- Leaf;
-      t.children <- dummy_table;
-      t.next <- next;
-      t.previous <- previous;
+      let previous = previous queue.back in
+      let new_kind = Leaf { next; previous } in
+      t.kind <- new_kind;
       set_previous next ~previous:t;
       set_next previous ~next:t
 
-    let set_child ~parent ~key ~child =
-      begin
-        match parent.kind with
-        | Dummy | Front_sentinal | Back_sentinal -> assert false
-        | Leaf ->
-            let next = parent.next in
-            let previous = parent.previous in
-            set_previous next ~previous;
-            set_next previous ~next;
-            parent.children <- Tbl.create 2;
-            parent.kind <- Branch
-        | Root | Branch -> ()
-      end;
-      Tbl.replace parent.children key child;
-      parent.incoming <- parent.incoming + 1
-
     let remove_child ~queue ~parent ~child =
       let key = child.edge_key in
-      Tbl.remove parent.children key;
-      let incoming = parent.incoming - 1 in
-      parent.incoming <- incoming;
-      if incoming = 0 then begin
-        match parent.kind with
-        | Dummy | Front_sentinal | Back_sentinal | Leaf ->
-            assert false
-        | Root -> ()
-        | Branch -> convert_to_leaf ~queue parent
-      end
+      match parent.kind with
+      | Dummy | Front_sentinal _ | Back_sentinal _ | Leaf _ | Suffix_leaf _ ->
+          assert false
+      | Root { children } ->
+          Tbl.remove children key
+      | Branch ({ children; incoming; _ } as k) ->
+          Tbl.remove children key;
+          let incoming = incoming - 1 in
+          if incoming = 0 then begin
+            convert_to_leaf ~queue parent
+          end else begin
+            k.incoming <- incoming
+          end
 
     let set_suffix t ~suffix =
       t.suffix_link <- suffix;
-      suffix.incoming <- suffix.incoming + 1;
       match suffix.kind with
-      | Dummy | Front_sentinal | Back_sentinal -> assert false
-      | Root | Branch -> ()
-      | Leaf ->
-          let next = suffix.next in
-          let previous = suffix.previous in
+      | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
+      | Root _ -> ()
+      | Branch k ->
+          k.incoming <- k.incoming + 1
+      | Suffix_leaf k ->
+          k.incoming <- k.incoming + 1
+      | Leaf { next; previous } ->
           set_previous next ~previous;
           set_next previous ~next;
-          suffix.children <- Tbl.create 2;
-          suffix.kind <- Branch
+          let incoming = 1 in
+          let descendents_count = 0 in
+          let heavy_descendents_count = 0 in
+          let new_kind =
+            Suffix_leaf
+              { incoming; descendents_count; heavy_descendents_count; }
+          in
+          suffix.kind <- new_kind
 
     let remove_incoming ~queue t =
-      let incoming = t.incoming - 1 in
-      t.incoming <- incoming;
-      if incoming = 0 then begin
-        match t.kind with
-        | Dummy | Front_sentinal | Back_sentinal | Leaf ->
-            assert false
-        | Root -> ()
-        | Branch -> convert_to_leaf ~queue t
-      end
+      match t.kind with
+      | Dummy | Front_sentinal _ | Back_sentinal _ | Leaf _ ->
+          assert false
+      | Root _ -> ()
+      | Suffix_leaf ({ incoming; _ } as k) ->
+          let incoming = incoming - 1 in
+          if incoming = 0 then begin
+            convert_to_leaf ~queue t
+          end else begin
+            k.incoming <- incoming
+          end
+      | Branch ({ incoming; _ } as k) ->
+          let incoming = incoming - 1 in
+          if incoming = 0 then begin
+            convert_to_leaf ~queue t
+          end else begin
+            k.incoming <- incoming
+          end
 
     let add_leaf t ~queue ~array ~index =
       let edge_array = array in
       let edge_start = index in
       let edge_len = (Array.length array) - index in
-      let edge_key = array.(index) in
+      let edge_key = edge_array.(edge_start) in
       let parent = t in
       let suffix_link = dummy in
-      let kind = Leaf in
+      let next = queue.back in
+      let previous = previous queue.back in
+      let kind = Leaf { next; previous } in
       let count = 0 in
       let max_child_delta = t.max_child_delta in
       let delta = max_child_delta in
-      let children = dummy_table in
-      let incoming = 0 in
-      let descendents_count = 0 in
-      let heavy_descendents_count = 0 in
-      let next = queue.back in
-      let previous = queue.back.previous in
       let node =
         { edge_array; edge_start; edge_len; edge_key;
           parent; suffix_link; kind;
-          count; delta; max_child_delta;
-          children; incoming; descendents_count;
-          heavy_descendents_count; next; previous; }
+          count; delta; max_child_delta; }
       in
       set_previous next ~previous:node;
       set_next previous ~next:node;
@@ -305,22 +331,21 @@ end = struct
         let new_node =
           let edge_len = len in
           let suffix_link = dummy in
-          let kind = Branch in
-          let count = 0 in
-          let delta = parent.max_child_delta in
-          let max_child_delta = parent.max_child_delta in
           let children = Tbl.create 2 in
           Tbl.add children child_key child;
           let incoming = 1 in
           let descendents_count = 0 in
           let heavy_descendents_count = 0 in
-          let next = dummy in
-          let previous = dummy in
+          let kind =
+            Branch { children; incoming;
+                     descendents_count; heavy_descendents_count; }
+          in
+          let count = 0 in
+          let delta = parent.max_child_delta in
+          let max_child_delta = parent.max_child_delta in
           { edge_array; edge_start; edge_len; edge_key;
             parent; suffix_link; kind;
-            count; delta; max_child_delta;
-            children; incoming; descendents_count;
-            heavy_descendents_count; next; previous; }
+            count; delta; max_child_delta}
         in
         child.edge_start <- edge_start + len;
         child.edge_len <- child.edge_len - len;
@@ -332,7 +357,7 @@ end = struct
 
     let is_root t =
       match t.kind with
-      | Root -> true
+      | Root _ -> true
       | _ -> false
 
     let count t = t.count
@@ -349,14 +374,19 @@ end = struct
 
     let find_child t char =
       match t.kind with
-      | Dummy | Front_sentinal | Back_sentinal -> assert false
-      | Leaf -> None
-      | Root | Branch -> Tbl.find_opt t.children char
+      | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
+      | Leaf _ | Suffix_leaf _ -> None
+      | Root { children; _ } | Branch { children; _ } ->
+          Tbl.find_opt children char
 
     let get_child t char =
-      match Tbl.find t.children char with
-      | child -> child
-      | exception Not_found -> failwith "get_child: No such child"
+      match t.kind with
+      | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
+      | Leaf _ | Suffix_leaf _ -> failwith "get_child: No children"
+      | Root { children; _ } | Branch { children; _ } ->
+          match Tbl.find children char with
+          | child -> child
+          | exception Not_found -> failwith "get_child: No such child"
 
     let edge_array t = t.edge_array
 
@@ -377,19 +407,43 @@ end = struct
     let parent t = t.parent
 
     let reset_descendents_count t =
-      t.descendents_count <- 0
+      match t.kind with
+      | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
+      | Leaf _ | Root _ -> ()
+      | Suffix_leaf k -> k.descendents_count <- 0
+      | Branch k -> k.descendents_count <- 0
 
     let add_to_descendents_count t diff =
-      t.descendents_count <- t.descendents_count + diff
+      match t.kind with
+      | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
+      | Leaf _ -> assert false
+      | Suffix_leaf k -> k.descendents_count <- k.descendents_count + diff
+      | Branch k -> k.descendents_count <- k.descendents_count + diff
+      | Root _ -> ()
 
     let add_to_heavy_descendents_count t diff =
-      t.heavy_descendents_count <- t.heavy_descendents_count + diff
+      match t.kind with
+      | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
+      | Leaf _ -> assert false
+      | Suffix_leaf k -> k.heavy_descendents_count <- k.heavy_descendents_count + diff
+      | Branch k -> k.heavy_descendents_count <- k.heavy_descendents_count + diff
+      | Root _ -> ()
 
     let descendents_count t =
-      t.descendents_count
+      match t.kind with
+      | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
+      | Leaf _ -> 0
+      | Suffix_leaf { descendents_count; _ }
+      | Branch { descendents_count; _ } -> descendents_count
+      | Root _ -> assert false
 
     let heavy_descendents_count t =
-      t.heavy_descendents_count
+      match t.kind with
+      | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
+      | Leaf _ -> 0
+      | Suffix_leaf { heavy_descendents_count; _ }
+      | Branch { heavy_descendents_count; _ } -> heavy_descendents_count
+      | Root _ -> assert false
 
     let update_parents_descendents_counts ~threshold t =
       if is_root t then ()
@@ -435,28 +489,27 @@ end = struct
 
     let iter_children f t =
       match t.kind with
-      | Dummy | Front_sentinal | Back_sentinal -> assert false
-      | Leaf -> ()
-      | Root | Branch -> Tbl.iter (fun _ n -> f n) t.children
+      | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
+      | Leaf _ | Suffix_leaf _ -> ()
+      | Root { children; _ } | Branch { children; _ } ->
+          Tbl.iter (fun _ n -> f n) children
 
     let fold_children f t acc =
       match t.kind with
-      | Dummy | Front_sentinal | Back_sentinal -> assert false
-      | Leaf -> acc
-      | Root | Branch -> Tbl.fold (fun _ n -> f n) t.children acc
+      | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
+      | Leaf _ | Suffix_leaf _ -> acc
+      | Root { children; _ } | Branch { children; _ } ->
+          Tbl.fold (fun _ n -> f n) children acc
 
     let squash ~queue t =
       match t.kind with
-      | Dummy | Front_sentinal | Back_sentinal -> assert false
-      | Root | Branch -> failwith "squash: Not a leaf"
-      | Leaf ->
-          let next = t.next in
-          let previous = t.previous in
+      | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
+      | Root _ | Branch _ | Suffix_leaf _ -> failwith "squash: Not a leaf"
+      | Leaf ({ previous; next } as k) ->
           set_previous next ~previous;
           set_next previous ~next;
-          t.kind <- Dummy;
-          t.next <- dummy;
-          t.previous <- dummy;
+          k.next <- dummy;
+          k.previous <- dummy;
           let parent = t.parent in
           let suffix = t.suffix_link in
           let count = t.count in
@@ -490,46 +543,36 @@ end = struct
         let max_child_delta = 0 in
         let parent = dummy in
         let suffix_link = dummy in
-        let children = dummy_table in
-        let incoming = 0 in
-        let descendents_count = 0 in
-        let heavy_descendents_count = 0 in
         let front =
-          let kind = Front_sentinal in
           let next = dummy in
-          let previous = dummy in
+          let kind = Front_sentinal { next; } in
           { edge_array; edge_start; edge_len; edge_key;
             parent; suffix_link; kind;
-            count; delta; max_child_delta;
-            children; incoming; descendents_count;
-            heavy_descendents_count; next; previous; }
+            count; delta; max_child_delta; }
         in
         let back =
-          let kind = Back_sentinal in
-          let next = dummy in
           let previous = front in
+          let kind = Back_sentinal { previous; } in
           { edge_array; edge_start; edge_len; edge_key;
             parent; suffix_link; kind;
-            count; delta; max_child_delta;
-            children; incoming; descendents_count;
-            heavy_descendents_count; next; previous; }
+            count; delta; max_child_delta; }
         in
         set_next front ~next:back;
         { front; back }
 
       let is_back_sentinal t =
         match t.kind with
-        | Back_sentinal -> true
+        | Back_sentinal _ -> true
         | _ -> false
 
       let iter t f =
         let previous = ref t.front in
-        let current = ref (t.front.next) in
+        let current = ref (next t.front) in
         while not (is_back_sentinal !current) do
           f !current;
-          let next_current = !current.next in
+          let next_current = next !current in
           if same next_current dummy then begin
-            current := !previous.next
+            current := next !previous
           end else begin
             previous := !current;
             current := next_current
