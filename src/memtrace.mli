@@ -13,12 +13,15 @@ val to_unix_timestamp : timestamp -> float
 
 type timedelta = Int64.t  (* microseconds *)
 
+
 type trace_info = {
   sample_rate : float;
+  word_size : int;
   executable_name : string;
   host_name : string;
-  start_time : timestamp;
-  pid : Int32.t
+  ocaml_runtime_params : string;
+  pid : Int64.t;
+  start_time : Int64.t;
 }
 val trace_info : trace -> trace_info
 

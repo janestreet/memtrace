@@ -1,4 +1,5 @@
 /* CTF 1.8 */
+/* Format specification for Memtrace v001 */
 
 typealias integer {size = 8;}  := uint8;
 typealias integer {size = 16;} := uint16;
@@ -42,19 +43,34 @@ trace {
 stream {
   packet.context := struct {
     uint32 packet_size;
-    uint32 content_size;
     clk64 timestamp_begin;
     clk64 timestamp_end;
+    uint32 flush_duration;
+    uint16 version;
+    uint64 pid;
+
+    uint16 cache_verify_ix;
+    uint16 cache_verify_pred;
+    uint64 cache_verify_val;
     uint64 alloc_id_begin;
     uint64 alloc_id_end;
-    float64 sample_rate;
-    string executable_name;
-    string host_name;
-    uint32 pid;
   };
   event.header := struct {
     integer {size=25; align=1; signed=false; map=clock.clk.value;} timestamp;
     integer {size=7; align=1; signed=false;} id;
+  };
+};
+
+event {
+  id = 0;
+  name = "trace_info";
+  fields := struct {
+    float64 sample_rate;
+    uint8 word_size;
+    string executable_name;
+    string host_name;
+    string ocaml_runtime_params;
+    uint64 pid;
   };
 };
 
@@ -77,9 +93,8 @@ typealias struct {
 } := location;
 
 event {
-  id = 0;
+  id = 1;
   name = "location";
-  stream_id = 0;
   fields := struct {
     uint64 code;
     uint8 nlocs;
@@ -97,9 +112,8 @@ typealias struct {
 } := backtrace_code;
 
 event {
-  id = 1;
+  id = 2;
   name = "alloc";
-  stream_id = 0;
   fields := struct {
     vint length;
     vint samples;
@@ -111,7 +125,7 @@ event {
 };
 
 event {
-  id = 2;
+  id = 3;
   name = "promote";
   fields := struct {
     vint obj_id_delta;
@@ -119,7 +133,7 @@ event {
 };
 
 event {
-  id = 3;
+  id = 4;
   name = "collect";
   fields := struct {
     vint obj_id_delta;

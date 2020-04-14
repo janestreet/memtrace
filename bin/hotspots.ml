@@ -224,7 +224,7 @@ let count filename =
       Printf.fprintf ppf "%4.1f GB" (n /. 1024. /. 1024. /. 1024.)
     | n ->
       Printf.fprintf ppf "%4.1f TB" (n /. 1024. /. 1024. /. 1024. /. 1024.) in
-  Printf.printf "Trace for %s [%ld]:\n   %d samples of %a allocations\n\n"
+  Printf.printf "Trace for %s [%Ld]:\n   %d samples of %a allocations\n\n"
     tinfo.executable_name tinfo.pid
     total_samples
     print_bytes (float_of_int total_samples /. tinfo.sample_rate *. wordsize);

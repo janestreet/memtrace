@@ -225,7 +225,7 @@ let print_hitters trace tinfo total ppf hitters =
 let print_report trace ppf (hitters, total) =
   let tinfo = trace_info trace in
   Format.fprintf ppf
-    "@[<v 2>@ Trace for %s [%ld]:@ %d samples of %a allocations@ \
+    "@[<v 2>@ Trace for %s [%Ld]:@ %d samples of %a allocations@ \
      @[<v 2>@ %a@ @]@ "
     tinfo.executable_name tinfo.pid
     total
