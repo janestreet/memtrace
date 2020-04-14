@@ -103,11 +103,13 @@ event {
 };
 
 typealias struct {
-  enum : integer {size=1; align=1; signed=false;} { hit = 0, miss = 1 } tag;
-  integer {size=15; align=1; signed=false;} cache_bucket;
+  enum : integer {size=2; align=1; signed=false;} { hit0 = 0, hit1 = 1, hitN = 2, miss = 3 } tag;
+  integer {size=14; align=1; signed=false;} cache_bucket;
   variant <tag> {
+    struct {} hit0;
+    struct {} hit1;
+    uint8 hitN;
     uint64 miss;
-    uint8 hit;
   } v;
 } := backtrace_code;
 

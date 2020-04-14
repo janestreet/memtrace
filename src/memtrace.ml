@@ -177,7 +177,7 @@ let get_float b =
 
 type times = { mutable t_start : float; mutable t_end : float }
 
-let cache_size = 1 lsl 15
+let cache_size = 1 lsl 14
 type cache_bucket = int  (* 0 to cache_size - 1 *)
 
 type reader_cache = {
@@ -609,21 +609,32 @@ let get_coded_backtrace ({ cache_loc ; cache_pred; _ } as cache) pos b =
     | 0 -> (bbuf, pos)
     | i ->
       let codeword = get_16 b in
-      let bucket = codeword lsr 1 and tag = codeword land 1 in
+      let bucket = codeword lsr 2 and tag = codeword land 3 in
       cache_pred.(pred) <- bucket;
-      if tag = 0 then begin
-        (* cache hit *)
-        let ncorrect = get_8 b in
-        predict bucket
-          (put_bbuf bbuf pos cache_loc.(bucket)) (pos + 1)
-          (i - 1) ncorrect
-      end else begin
-        (* cache miss *)
-        let lit = get_64 b in
-        cache_loc.(bucket) <- lit;
-        decode bucket
-          (put_bbuf bbuf pos lit) (pos + 1)
-          (i - 1)
+      begin match tag with
+      | 0 ->
+         (* cache hit, 0 prediction *)
+         predict bucket
+           (put_bbuf bbuf pos cache_loc.(bucket)) (pos + 1)
+           (i - 1) 0
+      | 1 ->
+         (* cache hit, 1 prediction *)
+         predict bucket
+           (put_bbuf bbuf pos cache_loc.(bucket)) (pos + 1)
+           (i - 1) 1
+      | 2 ->
+         (* cache hit, N prediction *)
+         let ncorrect = get_8 b in
+         predict bucket
+           (put_bbuf bbuf pos cache_loc.(bucket)) (pos + 1)
+           (i - 1) ncorrect
+      | _ ->
+         (* cache miss *)
+         let lit = get_64 b in
+         cache_loc.(bucket) <- lit;
+         decode bucket
+           (put_bbuf bbuf pos lit) (pos + 1)
+           (i - 1)
       end
   and predict pred bbuf pos i = function
     | 0 -> decode pred bbuf pos i
@@ -667,6 +678,12 @@ let log_alloc s is_major callstack length n_samples =
   put_8 b (if is_major then 1 else 0);
   put_vint b common_pfx_len;
 
+  let put_hit b bucket ncorrect =
+    match ncorrect with
+    | 0 -> put_16 b (bucket lsl 2)
+    | 1 -> put_16 b ((bucket lsl 2) lor 1)
+    | n -> put_16 b ((bucket lsl 2) lor 2); put_8 b n in
+
   let bt_off = b.pos in
   put_16 b 0;
   let rec code_no_prediction predictor pos ncodes =
@@ -690,7 +707,7 @@ let log_alloc s is_major callstack length n_samples =
         cache.cache.(bucket) <- slot;
         cache.cache_date.(bucket) <- id;
         cache.cache_next.(predictor) <- bucket;
-        put_16 s.packet ((bucket lsl 1) lor 1);
+        put_16 s.packet ((bucket lsl 2) lor 3);
         put_64 s.packet (Int64.of_int slot);
         code_no_prediction bucket (pos-1) (ncodes + 1)
       end
@@ -698,13 +715,12 @@ let log_alloc s is_major callstack length n_samples =
   and code_cache_hit predictor hit pos ncodes =
     (* Printf.printf "hit %d\n" hit; *)
     cache.cache_date.(hit) <- id;
-    put_16 s.packet (hit lsl 1);
     cache.cache_next.(predictor) <- hit;
-    code_with_prediction hit 0 (pos-1) (ncodes+1)
-  and code_with_prediction predictor ncorrect pos ncodes =
+    code_with_prediction hit hit 0 (pos-1) (ncodes+1)
+  and code_with_prediction orig_hit predictor ncorrect pos ncodes =
     assert (ncorrect < 256);
     if pos < 0 then begin
-      put_8 s.packet ncorrect;
+      put_hit s.packet orig_hit ncorrect;
       ncodes
     end else begin
       let slot = raw_stack.(pos) in
@@ -714,14 +730,14 @@ let log_alloc s is_major callstack length n_samples =
         (* Printf.printf "pred %d %d\n" pred_bucket ncorrect; *)
         if ncorrect = 255 then begin
           (* overflow: code a new prediction block *)
-          put_8 s.packet ncorrect;
+          put_hit s.packet orig_hit ncorrect;
           code_cache_hit predictor pred_bucket pos ncodes
         end else begin
-          code_with_prediction pred_bucket (ncorrect + 1) (pos-1) ncodes
+          code_with_prediction orig_hit pred_bucket (ncorrect + 1) (pos-1) ncodes
         end
       end else begin
         (* incorrect prediction *)
-        put_8 s.packet ncorrect;
+        put_hit s.packet orig_hit ncorrect;
         code_no_prediction predictor pos ncodes
       end
     end in
