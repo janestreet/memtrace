@@ -46,7 +46,7 @@ end = struct
 
       val create : unit -> t
 
-      (* Iterator that can safely squash the current leaf and add new leaves *)
+      (* Iterator that can safely squash the current leaf *)
       val iter : t -> (node -> unit) -> unit
 
     end
@@ -57,10 +57,6 @@ end = struct
     val split_edge : parent:t -> child:t -> len:int -> t
 
     val set_suffix : t -> suffix:t -> unit
-
-    val count : t -> int
-
-    val delta : t -> int
 
     val add_count : t -> int -> unit
 
@@ -84,7 +80,7 @@ end = struct
 
     val parent : t -> t
 
-    val squash : queue:Queue.t -> t -> unit
+    val maybe_squash_leaf : queue:Queue.t -> threshold:int -> t -> unit
 
     val reset_descendents_count : t -> unit
 
@@ -129,8 +125,7 @@ end = struct
             mutable heavy_descendents_count : int; }
 
     type queue =
-      { front : t;
-        back : t; }
+      { front : t } [@@unboxed]
 
     let same t1 t2 = t1 == t2
 
@@ -183,12 +178,6 @@ end = struct
           assert false
       | Front_sentinal { next; _ } | Leaf { next; _ } -> next
 
-    let previous t =
-      match t.kind with
-      | Dummy | Front_sentinal _ | Suffix_leaf _ | Root _ | Branch _ ->
-          assert false
-      | Back_sentinal { previous; _ } | Leaf { previous; _ } -> previous
-
     let set_next t ~next =
       match t.kind with
       | Dummy | Back_sentinal _ | Suffix_leaf _ | Root _ | Branch _ ->
@@ -234,27 +223,27 @@ end = struct
           k.incoming <- incoming + 1
 
     let convert_to_leaf ~queue t =
-      let next = queue.back in
-      let previous = previous queue.back in
+      let previous = queue.front in
+      let next = next queue.front in
       let new_kind = Leaf { next; previous } in
       t.kind <- new_kind;
       set_previous next ~previous:t;
       set_next previous ~next:t
 
-    let remove_child ~queue ~parent ~child =
+    let remove_child ~parent ~child =
       let key = child.edge_key in
       match parent.kind with
       | Dummy | Front_sentinal _ | Back_sentinal _ | Leaf _ | Suffix_leaf _ ->
           assert false
       | Root { children } ->
-          Tbl.remove children key
+          Tbl.remove children key; false
       | Branch ({ children; incoming; _ } as k) ->
           Tbl.remove children key;
           let incoming = incoming - 1 in
-          if incoming = 0 then begin
-            convert_to_leaf ~queue parent
-          end else begin
-            k.incoming <- incoming
+          if incoming = 0 then true
+          else begin
+            k.incoming <- incoming;
+            false
           end
 
     let set_suffix t ~suffix =
@@ -278,24 +267,24 @@ end = struct
           in
           suffix.kind <- new_kind
 
-    let remove_incoming ~queue t =
+    let remove_incoming t =
       match t.kind with
       | Dummy | Front_sentinal _ | Back_sentinal _ | Leaf _ ->
           assert false
-      | Root _ -> ()
+      | Root _ -> false
       | Suffix_leaf ({ incoming; _ } as k) ->
           let incoming = incoming - 1 in
-          if incoming = 0 then begin
-            convert_to_leaf ~queue t
-          end else begin
-            k.incoming <- incoming
+          if incoming = 0 then true
+          else begin
+            k.incoming <- incoming;
+            false
           end
       | Branch ({ incoming; _ } as k) ->
           let incoming = incoming - 1 in
-          if incoming = 0 then begin
-            convert_to_leaf ~queue t
-          end else begin
-            k.incoming <- incoming
+          if incoming = 0 then true
+          else begin
+            k.incoming <- incoming;
+            false
           end
 
     let add_leaf t ~queue ~array ~index =
@@ -305,8 +294,8 @@ end = struct
       let edge_key = edge_array.(edge_start) in
       let parent = t in
       let suffix_link = dummy in
-      let next = queue.back in
-      let previous = previous queue.back in
+      let next = next queue.front in
+      let previous = queue.front in
       let kind = Leaf { next; previous } in
       let count = 0 in
       let max_child_delta = t.max_child_delta in
@@ -359,10 +348,6 @@ end = struct
       match t.kind with
       | Root _ -> true
       | _ -> false
-
-    let count t = t.count
-
-    let delta t = t.delta
 
     let add_count t count =
       t.count <- t.count + count
@@ -501,31 +486,46 @@ end = struct
       | Root { children; _ } | Branch { children; _ } ->
           Tbl.fold (fun _ n -> f n) children acc
 
-    let squash ~queue t =
-      match t.kind with
-      | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
-      | Root _ | Branch _ | Suffix_leaf _ -> failwith "squash: Not a leaf"
-      | Leaf ({ previous; next } as k) ->
-          set_previous next ~previous;
-          set_next previous ~next;
-          k.next <- dummy;
-          k.previous <- dummy;
-          let parent = t.parent in
-          let suffix = t.suffix_link in
-          let count = t.count in
-          if not (same parent dummy) then begin
-            let grand_parent = t.parent.suffix_link in
-            add_count parent count;
-            add_child_delta parent (count + t.delta);
-            remove_child ~queue ~parent ~child:t;
-            if not (same grand_parent dummy) then begin
-              add_count grand_parent (-count)
-            end
-          end;
-          if not (same suffix dummy) then begin
-            add_count suffix count;
-            remove_incoming ~queue suffix
-          end;
+    let rec squash_detached ~queue ~threshold t =
+      let parent = t.parent in
+      let suffix = t.suffix_link in
+      let count = t.count in
+      let delta = t.delta in
+      if not (same parent dummy) then begin
+        let grand_parent = t.parent.suffix_link in
+        add_count parent count;
+        add_child_delta parent (count + delta);
+        if not (same grand_parent dummy) then begin
+          add_count grand_parent (-count)
+        end;
+        if (remove_child ~parent ~child:t) then begin
+          let upper_bound = parent.count + parent.delta in
+          if upper_bound < threshold then squash_detached ~queue ~threshold parent
+          else convert_to_leaf ~queue parent
+        end
+      end;
+      if not (same suffix dummy) then begin
+        add_count suffix count;
+        if (remove_incoming suffix) then begin
+          let upper_bound = suffix.count + suffix.delta in
+          if upper_bound < threshold then squash_detached ~queue ~threshold suffix
+          else convert_to_leaf ~queue suffix
+        end
+      end
+
+    let maybe_squash_leaf ~queue ~threshold t =
+      let upper_bound = t.count + t.delta in
+      if upper_bound < threshold then begin
+        match t.kind with
+        | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
+        | Root _ | Branch _ | Suffix_leaf _ -> failwith "squash: Not a leaf"
+        | Leaf ({ previous; next } as k) ->
+            set_previous next ~previous;
+            set_next previous ~next;
+            k.next <- dummy;
+            k.previous <- dummy;
+            squash_detached ~queue ~threshold t
+      end
 
     module Queue = struct
 
@@ -558,7 +558,7 @@ end = struct
             count; delta; max_child_delta; }
         in
         set_next front ~next:back;
-        { front; back }
+        { front }
 
       let is_back_sentinal t =
         match t.kind with
@@ -566,17 +566,11 @@ end = struct
         | _ -> false
 
       let iter t f =
-        let previous = ref t.front in
         let current = ref (next t.front) in
         while not (is_back_sentinal !current) do
-          f !current;
           let next_current = next !current in
-          if same next_current dummy then begin
-            current := next !previous
-          end else begin
-            previous := !current;
-            current := next_current
-          end
+          f !current;
+          current := next_current
         done
 
     end
@@ -754,10 +748,8 @@ end = struct
 
   let compress t =
     let queue = t.leaves in
-    Node.Queue.iter queue
-      (fun leaf ->
-         let upper_bound = Node.count leaf + Node.delta leaf in
-         if upper_bound < t.current_bucket then Node.squash ~queue leaf)
+    let threshold = t.current_bucket in
+    Node.Queue.iter queue (Node.maybe_squash_leaf ~queue ~threshold)
 
   let insert t array count =
     let len = Array.length array in
