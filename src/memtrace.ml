@@ -66,6 +66,7 @@ let mkbuffer buf off len =
 let mkbuffer buf =
   mkbuffer buf 0 (Bytes.length buf)
 
+let put_raw_8 b i v = Bytes.unsafe_set b i (Char.unsafe_chr v)
 external put_raw_16 : Bytes.t -> int -> int -> unit = "%caml_bytes_set16u"
 external put_raw_32 : Bytes.t -> int -> int32 -> unit = "%caml_bytes_set32u"
 external put_raw_64 : Bytes.t -> int -> int64 -> unit = "%caml_bytes_set64u"
@@ -97,7 +98,7 @@ let put_8 b v =
   let pos = b.pos in
   let pos' = b.pos + 1 in
   if pos' > b.pos_end then overflow b else
-  (Bytes.unsafe_set b.buf pos (Char.unsafe_chr v);
+  (put_raw_8 b.buf pos v;
    b.pos <- pos')
 let put_16 b v =
   let pos = b.pos in
@@ -286,19 +287,24 @@ type packet_header_info = {
   pid : Int64.t
 }
 
-type evcode = Ev_trace_info | Ev_location | Ev_alloc | Ev_promote | Ev_collect
+type evcode = Ev_trace_info | Ev_location | Ev_alloc | Ev_promote | Ev_collect | Ev_short_alloc of int
 let event_code = function
   | Ev_trace_info -> 0
   | Ev_location -> 1
   | Ev_alloc -> 2
   | Ev_promote -> 3
   | Ev_collect -> 4
+  | Ev_short_alloc n ->
+     assert (1 <= n && n <= 16);
+     100 + n
 let event_of_code = function
   | 0 -> Ev_trace_info
   | 1 -> Ev_location
   | 2 -> Ev_alloc
   | 3 -> Ev_promote
   | 4 -> Ev_collect
+  | n when 101 <= n && n <= 116 ->
+     Ev_short_alloc (n - 100)
   | c -> bad_format ("Unknown event code " ^ string_of_int c)
 
 let event_header_time_len = 25
@@ -325,7 +331,7 @@ let get_event_header info b =
              (of_int32 time_low)) in
   check_fmt "time in packet bounds" (info.time_begin <= time);
   check_fmt "time in packet bounds" (time <= info.time_end);
-  let ev = event_of_code (Int32.(to_int (shift_right code
+  let ev = event_of_code (Int32.(to_int (shift_right_logical code
                                            event_header_time_len))) in
   (ev, time)
 
@@ -591,7 +597,7 @@ let begin_event s ev =
   put_event_header s.packet ev now
 
 
-let get_coded_backtrace ({ cache_loc ; cache_pred; _ } as cache) pos b =
+let get_coded_backtrace ({ cache_loc ; cache_pred; _ } as cache) bt_length pos b =
   assert (pos <= Array.length cache.last_backtrace);
   let put_bbuf bbuf pos x =
     assert (pos <= Array.length bbuf);
@@ -643,17 +649,11 @@ let get_coded_backtrace ({ cache_loc ; cache_pred; _ } as cache) pos b =
       predict pred'
         (put_bbuf bbuf pos cache_loc.(pred')) (pos + 1)
         i (n-1) in
-  let n = get_16 b in
-  let (bbuf, pos) = decode 0 cache.last_backtrace pos n in
+  let (bbuf, pos) = decode 0 cache.last_backtrace pos bt_length in
   cache.last_backtrace <- bbuf;
   (bbuf, pos)
 
 let log_alloc s is_major callstack length n_samples =
-  begin_event s Ev_alloc;
-  let id = s.next_alloc_id in
-  s.next_alloc_id <- id + 1;
-  let cache = s.cache in
-
   (* Find length of common suffix *)
   let raw_stack : int array = Obj.magic callstack in
   let last = s.last_callstack in
@@ -669,23 +669,41 @@ let log_alloc s is_major callstack length n_samples =
       j := -1
     end
   done;
-  s.last_callstack <- raw_stack;
 
+  let is_short =
+    1 <= length && length <= 16
+    && not is_major
+    && n_samples = 1
+    && !i < 255 in
+  begin_event s (if is_short then Ev_short_alloc length else Ev_alloc);
+  let id = s.next_alloc_id in
+  s.next_alloc_id <- id + 1;
+  s.last_callstack <- raw_stack;
+  let cache = s.cache in
   let b = s.packet in
   let common_pfx_len = Array.length raw_stack - 1 - !i in
-  put_vint b length;
-  put_vint b n_samples;
-  put_8 b (if is_major then 1 else 0);
-  put_vint b common_pfx_len;
+  let bt_len_off =
+    if is_short then begin
+      put_vint s.packet common_pfx_len;
+      let bt_off = s.packet.pos in
+      put_8 b 0;
+      bt_off
+    end else begin
+      put_vint b length;
+      put_vint b n_samples;
+      put_8 b (if is_major then 1 else 0);
+      put_vint b common_pfx_len;
+      let bt_off = b.pos in
+      put_16 b 0;
+      bt_off
+    end in
+  let bt_elem_off = b.pos in
 
   let put_hit b bucket ncorrect =
     match ncorrect with
     | 0 -> put_16 b (bucket lsl 2)
     | 1 -> put_16 b ((bucket lsl 2) lor 1)
     | n -> put_16 b ((bucket lsl 2) lor 2); put_8 b n in
-
-  let bt_off = b.pos in
-  put_16 b 0;
   let rec code_no_prediction predictor pos ncodes =
     if pos < 0 then
       ncodes
@@ -742,15 +760,20 @@ let log_alloc s is_major callstack length n_samples =
       end
     end in
   let ncodes = code_no_prediction 0 !i 0 in
-  (* FIXME: bound this properly *)
-  assert (ncodes <= 0xffff);
-  put_raw_16 b.buf bt_off ncodes;
+  if is_short then begin
+    assert (ncodes <= 0xff);
+    put_raw_8 b.buf bt_len_off ncodes
+  end else begin
+    (* FIXME: bound this properly *)
+    assert (ncodes <= 0xffff);
+    put_raw_16 b.buf bt_len_off ncodes
+  end;
 
   (match cache.debug_cache with
    | None -> ()
    | Some c ->
-     let b' = { buf = b.buf; pos = bt_off; pos_end = b.pos } in
-     let decoded, decoded_len = get_coded_backtrace c common_pfx_len b' in
+     let b' = { buf = b.buf; pos = bt_elem_off; pos_end = b.pos } in
+     let decoded, decoded_len = get_coded_backtrace c ncodes common_pfx_len b' in
      assert (remaining b' = 0);
      if (Array.sub decoded 0 decoded_len) <> (raw_stack |> Array.map Int64.of_int |> Array.to_list |> List.rev |> Array.of_list) then begin
     (raw_stack |> Array.map Int64.of_int |> Array.to_list |> List.rev |> Array.of_list) |> Array.iter (Printf.printf " %08Lx"); Printf.printf " !\n%!";
@@ -919,26 +942,31 @@ type event =
   | Promote of obj_id
   | Collect of obj_id
 
-let get_alloc ~parse_backtraces cache alloc_id b =
-  ignore (parse_backtraces);
-  let length = get_vint b in
-  let nsamples = get_vint b in
-  let is_major = get_8 b |> function 0 -> false | _ -> true in
+let get_alloc ~parse_backtraces evcode cache alloc_id b =
+  let is_short, length, nsamples, is_major =
+    match evcode with
+    | Ev_short_alloc n ->
+       true, n, 1, false
+    | Ev_alloc -> begin
+       let length = get_vint b in
+       let nsamples = get_vint b in
+       let is_major = get_8 b |> function 0 -> false | 1 -> true | _ -> bad_format "is_major" in
+       false, length, nsamples, is_major
+      end
+    | _ -> assert false in
   let common_prefix = get_vint b in
+  let ncoded =
+    if is_short then get_8 b else get_16 b in
   let (backtrace_buffer, backtrace_length) =
     if parse_backtraces then
-      get_coded_backtrace cache common_prefix b
+      get_coded_backtrace cache ncoded common_prefix b
     else begin
-      let n = get_16 b in
-      for _ = 1 to n do
+      for _ = 1 to ncoded do
         let codeword = get_16 b in
-        if codeword land 1 = 0 then begin
-          (* hit *)
-          let _ = get_8 b in ()
-        end else begin
-          (* miss *)
-          let _ = get_64 b in ()
-        end
+        if codeword land 3 = 2 then
+          ignore (get_8 b) (* hitN *)
+        else if codeword land 3 = 3 then
+          ignore (get_64 b) (* miss *)
       done;
       [| |], 0
     end in
@@ -963,7 +991,7 @@ let parse_packet_events ~parse_backtraces file_mtf defn_mtfs loc_table cache sta
   let alloc_id = ref (Int64.to_int hdrinfo.alloc_id_begin) in
   let last_time = ref 0L in
   while remaining b > 0 do
-    (*let last_pos = b.pos in*)
+    (* let last_pos = b.pos in *)
     let (ev, time) = get_event_header hdrinfo b in
     check_fmt "monotone timestamps" (!last_time <= time);
     last_time := time;
@@ -978,8 +1006,8 @@ let parse_packet_events ~parse_backtraces file_mtf defn_mtfs loc_table cache sta
         check_fmt "consistent location info" (Hashtbl.find loc_table id = loc)
       else
         Hashtbl.add loc_table id loc
-    | Ev_alloc ->
-      let info = get_alloc ~parse_backtraces cache !alloc_id b in
+    | (Ev_alloc | Ev_short_alloc _) as evcode ->
+      let info = get_alloc ~parse_backtraces evcode cache !alloc_id b in
       incr alloc_id;
       (*Printf.printf "%3d " (b.pos - last_pos);*)
       f dt info
@@ -1025,7 +1053,7 @@ let iter_trace {fd; loc_table; data_off; info = { start_time; _ } } ?(parse_back
     if remaining b = 0 then () else
     let info = get_ctf_header b in
     if (last_timestamp <= info.time_begin) && (last_alloc_id = info.alloc_id_begin) then begin
-      if info.cache_verify_ix <> 0xffff then begin
+      if parse_backtraces && info.cache_verify_ix <> 0xffff then begin
         check_fmt "cache verification" (0 <= info.cache_verify_ix && info.cache_verify_ix < Array.length cache.cache_loc);
         check_fmt "cache verification" (cache.cache_loc.(info.cache_verify_ix) = info.cache_verify_val);
         check_fmt "cache verification" (cache.cache_pred.(info.cache_verify_ix) = info.cache_verify_pred);

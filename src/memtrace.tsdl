@@ -142,3 +142,25 @@ event {
   };
 };
 
+
+typealias struct {
+  vint common_prefix;
+  uint8 new_suffix;
+  backtrace_code backtrace[new_suffix];
+} := short_alloc;
+event { id = 101; name = "alloc01"; fields := short_alloc; };
+event { id = 102; name = "alloc02"; fields := short_alloc; };
+event { id = 103; name = "alloc03"; fields := short_alloc; };
+event { id = 104; name = "alloc04"; fields := short_alloc; };
+event { id = 105; name = "alloc05"; fields := short_alloc; };
+event { id = 106; name = "alloc06"; fields := short_alloc; };
+event { id = 107; name = "alloc07"; fields := short_alloc; };
+event { id = 108; name = "alloc08"; fields := short_alloc; };
+event { id = 109; name = "alloc09"; fields := short_alloc; };
+event { id = 110; name = "alloc10"; fields := short_alloc; };
+event { id = 111; name = "alloc11"; fields := short_alloc; };
+event { id = 112; name = "alloc12"; fields := short_alloc; };
+event { id = 113; name = "alloc13"; fields := short_alloc; };
+event { id = 114; name = "alloc14"; fields := short_alloc; };
+event { id = 115; name = "alloc15"; fields := short_alloc; };
+event { id = 116; name = "alloc16"; fields := short_alloc; };
