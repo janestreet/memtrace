@@ -22,7 +22,7 @@ module Substring_heavy_hitters (X : Char) : sig
 
   val create : error:float -> t
 
-  val insert : t -> X.t array -> int -> unit
+  val insert : t -> common_prefix:int -> X.t array -> count:int -> unit
 
   val output : t -> frequency:float -> (X.t array * int * int * int) list * int
 
@@ -37,6 +37,8 @@ end = struct
     val is_root : t -> bool
 
     val create_root : unit -> t
+
+    val label : t -> X.t array
 
     module Queue : sig
 
@@ -583,6 +585,10 @@ end = struct
 
     val create : at:Node.t -> t
 
+    val goto : t -> Node.t -> unit
+
+    val retract : t -> distance:int -> unit
+
     val scan : t -> array:X.t array -> index:int -> bool
 
     val split_at : t -> Node.t
@@ -605,6 +611,22 @@ end = struct
       t.parent <- node;
       t.len <- 0;
       t.child <- node
+
+    let rec retract t ~distance =
+      let len = t.len in
+      if len > distance then begin
+        t.len <- len - distance
+      end else if len = distance then begin
+        t.len <- 0;
+        t.child <- t.parent;
+      end else begin
+        let distance = distance - len in
+        let parent = t.parent in
+        t.child <- parent;
+        t.parent <- Node.parent parent;
+        t.len <- Node.edge_length parent;
+        retract t ~distance
+      end
 
     (* Move cursor 1 character towards child. Child assumed
        not equal to parent. *)
@@ -716,6 +738,10 @@ end = struct
 
   end
 
+  type state =
+    | Uncompressed
+    | Compressed of X.t array
+
   type t =
     { root : Node.t;
       leaves : Node.Queue.t;
@@ -724,6 +750,9 @@ end = struct
       bucket_size : int;
       mutable current_bucket : int;
       mutable remaining_in_current_bucket : int;
+      active : Cursor.t;
+      mutable previous_length : int;
+      mutable state : state;
     }
 
   let create ~error =
@@ -734,8 +763,12 @@ end = struct
     let bucket_size = Float.to_int (Float.ceil (1.0 /. error)) in
     let current_bucket = 0 in
     let remaining_in_current_bucket = bucket_size in
+    let active = Cursor.create ~at:root in
+    let previous_length = 0 in
+    let state = Uncompressed in
     { root; leaves; max_length; count;
-      bucket_size; current_bucket; remaining_in_current_bucket; }
+      bucket_size; current_bucket; remaining_in_current_bucket;
+      active; previous_length; state }
 
   let ensure_suffixes cursor node =
     let current = ref node in
@@ -751,16 +784,28 @@ end = struct
     let threshold = t.current_bucket in
     Node.Queue.iter queue (Node.maybe_squash_leaf ~queue ~threshold)
 
-  let insert t array count =
+  let insert t ~common_prefix array ~count =
     let len = Array.length array in
-    if len > t.max_length then t.max_length <- len;
+    let total_len = common_prefix + len in
+    if total_len > t.max_length then t.max_length <- total_len;
     t.count <- t.count + count;
     let queue = t.leaves in
-    let active = Cursor.create ~at:t.root in
+    let active = t.active in
+    let array, len, base =
+      match t.state with
+      | Uncompressed ->
+        Cursor.retract active ~distance:(t.previous_length - common_prefix);
+        array, len, common_prefix
+      | Compressed previous_label ->
+        let common = Array.sub previous_label 0 common_prefix in
+        let array = Array.append common array in
+        array, total_len, 0
+    in
     let j = ref 0 in
     let destination = ref None in
     for index = 0 to len - 1 do
-      while (!j <= index) && not (Cursor.scan active ~array ~index) do
+      while (!j <= base + index)
+            && not (Cursor.scan active ~array ~index) do
         let parent = Cursor.split_at active in
         let leaf = Node.add_leaf parent ~queue ~array ~index in
         begin
@@ -787,9 +832,16 @@ end = struct
     if remaining <= 0 then begin
       t.current_bucket <- t.current_bucket + 1;
       t.remaining_in_current_bucket <- t.bucket_size;
-      compress t
+      let destination_label = Node.label destination in
+      Cursor.goto active t.root;
+      compress t;
+      t.previous_length <- 0;
+      t.state <- Compressed destination_label
     end else begin
-      t.remaining_in_current_bucket <- remaining
+      t.remaining_in_current_bucket <- remaining;
+      Cursor.goto active destination;
+      t.previous_length <- total_len;
+      t.state <- Uncompressed
     end
 
   let update_descendent_counts ~threshold t =
@@ -908,17 +960,28 @@ let count ~frequency ~error ~filename =
     (fun _time ev ->
        match ev with
        | Alloc {obj_id=_; length=_; nsamples; is_major=_;
-                backtrace_buffer; backtrace_length; common_prefix=_} ->
+                backtrace_buffer; backtrace_length; common_prefix} ->
+           let common = ref 0 in
            let rev_trace = ref [] in
            Loc_tbl.clear seen;
-           for i = backtrace_length - 1 downto 0 do
+           for i = 0 to common_prefix - 1 do
+             let loc = backtrace_buffer.(i) in
+             if not (Loc_tbl.mem seen loc) then begin
+               incr common;
+               Loc_tbl.add seen loc ()
+             end
+           done;
+           for i = common_prefix to backtrace_length - 1 do
              let loc = backtrace_buffer.(i) in
              if not (Loc_tbl.mem seen loc) then begin
                rev_trace := loc :: !rev_trace;
                Loc_tbl.add seen loc ()
              end
            done;
-           Loc_hitters.insert shh (Array.of_list !rev_trace) nsamples
+           let common_prefix = !common in
+           let extension = Array.of_list (List.rev !rev_trace) in
+           Loc_hitters.insert shh ~common_prefix
+             extension ~count:nsamples
       | Promote _ -> ()
       | Collect _ -> ());
   let results = Loc_hitters.output shh ~frequency in
