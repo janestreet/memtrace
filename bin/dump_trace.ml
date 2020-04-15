@@ -11,7 +11,7 @@ let dump filename =
     for i = 0 to backtrace_length - 1 do
       let s = backtrace_buffer.(i) in
       match lookup_location trace s with
-      | [] -> Printf.printf " $%Ld" (s :> Int64.t)
+      | [] -> Printf.printf " $%d" (s :> int)
       | ls -> ls |> List.iter (Printf.printf " %a" print_location)
     done;
     Printf.printf "\n%!"

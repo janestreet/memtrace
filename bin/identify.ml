@@ -35,9 +35,9 @@ let identify filename =
   Printf.printf "   with OCaml GC params %s\n" info.ocaml_runtime_params;
   Printf.printf "Trace statistics:\n%!";
   let tmax = ref 0L in
-  let minor_live = Hashtbl.create 100 in
+  let minor_live = IdTbl.create 100 in
   (* As an optimisation, only store allocations with nsamples > 1 *)
-  let major_live_multisampled = Hashtbl.create 100 in
+  let major_live_multisampled = IdTbl.create 100 in
   let minor_alloc = ref 0 and minor_collect = ref 0 and promote = ref 0 in
   let major_alloc = ref 0 and major_collect = ref 0 in
   let dist4 = ref 0 and dist16 = ref 0 and dist256 = ref 0 and szmax = ref 0 in
@@ -48,31 +48,31 @@ let identify filename =
        if is_major then begin
          major_alloc := !major_alloc + nsamples;
          if nsamples > 1 then
-           Hashtbl.add major_live_multisampled obj_id nsamples
+           IdTbl.add major_live_multisampled obj_id nsamples
        end else begin
          minor_alloc := !minor_alloc + nsamples;
-         Hashtbl.add minor_live obj_id nsamples
+         IdTbl.add minor_live obj_id nsamples
        end;
        if length <= 4 then dist4 := !dist4 + nsamples;
        if length <= 16 then dist16 := !dist16 + nsamples;
        if length <= 256 then dist256 := !dist256 + nsamples;
        if length > !szmax then szmax := length
     | Promote id ->
-       assert (Hashtbl.mem minor_live id);
-       let nsamples = Hashtbl.find minor_live id in
-       Hashtbl.remove minor_live id;
+       assert (IdTbl.mem minor_live id);
+       let nsamples = IdTbl.find minor_live id in
+       IdTbl.remove minor_live id;
        promote := !promote + nsamples;
        if nsamples > 1 then
-         Hashtbl.add major_live_multisampled id nsamples;
+         IdTbl.add major_live_multisampled id nsamples;
     | Collect id ->
-       if Hashtbl.mem minor_live id then begin
-         let nsamples = Hashtbl.find minor_live id in
-         Hashtbl.remove minor_live id;
+       if IdTbl.mem minor_live id then begin
+         let nsamples = IdTbl.find minor_live id in
+         IdTbl.remove minor_live id;
          minor_collect := !minor_collect + nsamples
        end else begin
          let nsamples =
-           match Hashtbl.find major_live_multisampled id with
-           | n -> Hashtbl.remove major_live_multisampled id; n
+           match IdTbl.find major_live_multisampled id with
+           | n -> IdTbl.remove major_live_multisampled id; n
            | exception Not_found -> 1 in
          major_collect := !major_collect + nsamples
        end);

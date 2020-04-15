@@ -136,12 +136,8 @@ module Location = struct
 
   type t = location_code
 
-  let hash (x : t) =
-    Int64.(shift_right (mul (x :> int64) 984372984721L) 17 |> to_int)
-
-  let equal (x : t) (y : t) =
-    Int64.equal (x :> int64) (y :> int64)
-
+  let hash (x : location_code) = ((x :> int) * 984372984721) lsr 17
+  let equal (x : location_code) (y : location_code) = (x = y)
 end
 
 module Loc_hitters = Hierarchical_heavy_hitters(Location)

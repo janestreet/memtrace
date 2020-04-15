@@ -43,7 +43,15 @@ end
 
 (* Increment this when the format changes *)
 let memtrace_version = 1
-let cache_enable_debug = true
+let cache_enable_debug = false
+
+module IntTbl = Hashtbl.MakeSeeded (struct
+  type t = int
+  let hash _seed (id : t) =
+    let h = id * 189696287 in
+    h lxor (h lsr 23)
+  let equal (a : t) (b : t) = a = b
+end)
 
 (* Buffer management *)
 
@@ -70,9 +78,9 @@ let put_raw_8 b i v = Bytes.unsafe_set b i (Char.unsafe_chr v)
 external put_raw_16 : Bytes.t -> int -> int -> unit = "%caml_bytes_set16u"
 external put_raw_32 : Bytes.t -> int -> int32 -> unit = "%caml_bytes_set32u"
 external put_raw_64 : Bytes.t -> int -> int64 -> unit = "%caml_bytes_set64u"
-external get_raw_16 : Bytes.t -> int -> int = "%caml_bytes_get16"
-external get_raw_32 : Bytes.t -> int -> int32 = "%caml_bytes_get32"
-external get_raw_64 : Bytes.t -> int -> int64 = "%caml_bytes_get64"
+external get_raw_16 : Bytes.t -> int -> int = "%caml_bytes_get16u"
+external get_raw_32 : Bytes.t -> int -> int32 = "%caml_bytes_get32u"
+external get_raw_64 : Bytes.t -> int -> int64 = "%caml_bytes_get64u"
 external bswap_16 : int -> int = "%bswap16"
 external bswap_32 : int32 -> int32 = "%bswap_int32"
 external bswap_64 : int64 -> int64 = "%bswap_int64"
@@ -88,7 +96,7 @@ let () =
     | _ -> None)
 
 let[@inline never] overflow b = raise (Gen_error (`Overflow b.pos))
-let[@inline never] underflow b = raise (Parse_error (`Underflow b.pos))
+let[@inline never] underflow b = Parse_error (`Underflow b.pos)
 let[@inline never] bad_format s = raise (Parse_error (`Bad_format s))
 let[@inline never] bad_formatf f = Printf.ksprintf (fun s -> bad_format s) f
 let check_fmt s b = if not b then bad_format s
@@ -139,32 +147,36 @@ let put_string b s =
 let put_float b f =
   put_64 b (Int64.bits_of_float f)
 
-let get_8 b =
-  if b.pos + 1 > b.pos_end then underflow b;
-  let n = Bytes.unsafe_get b.buf b.pos in
-  b.pos <- b.pos + 1;
-  Char.code n
-let get_16 b =
-  if b.pos + 2 > b.pos_end then underflow b;
-  let n = get_raw_16 b.buf b.pos in
-  b.pos <- b.pos + 2;
-  if Sys.big_endian then bswap_16 n else n
-let get_32 b =
-  if b.pos + 4 > b.pos_end then underflow b;
-  let n = get_raw_32 b.buf b.pos in
-  b.pos <- b.pos + 4;
-  if Sys.big_endian then bswap_32 n else n
-let get_64 b =
-  if b.pos + 8 > b.pos_end then underflow b;
-  let n = get_raw_64 b.buf b.pos in
-  b.pos <- b.pos + 8;
-  if Sys.big_endian then bswap_64 n else n
+let[@inline always] get_8 b =
+  let pos = b.pos in
+  let pos' = b.pos + 1 in
+  if pos' > b.pos_end then raise (underflow b);
+  b.pos <- pos';
+  Char.code (Bytes.unsafe_get b.buf pos)
+let[@inline always] get_16 b =
+  let pos = b.pos in
+  let pos' = b.pos + 2 in
+  if pos' > b.pos_end then raise (underflow b);
+  b.pos <- pos';
+  if Sys.big_endian then bswap_16 (get_raw_16 b.buf pos) else get_raw_16 b.buf pos
+let[@inline always] get_32 b =
+  let pos = b.pos in
+  let pos' = b.pos + 4 in
+  if pos' > b.pos_end then raise (underflow b);
+  b.pos <- pos';
+  if Sys.big_endian then bswap_32 (get_raw_32 b.buf pos) else get_raw_32 b.buf pos
+let[@inline always] get_64 b =
+  let pos = b.pos in
+  let pos' = b.pos + 8 in
+  if pos' > b.pos_end then raise (underflow b);
+  b.pos <- pos';
+  if Sys.big_endian then bswap_64 (get_raw_64 b.buf pos) else get_raw_64 b.buf pos
 (* FIXME: overflow if deserialised on 32-bit. Should I care? *)
-let get_vint b =
+let[@inline always] get_vint b =
   match get_8 b with
   | 253 -> get_16 b
-  | 254 -> get_32 b |> Int32.to_int
-  | 255 -> get_64 b |> Int64.to_int
+  | 254 -> Int32.to_int (get_32 b)
+  | 255 -> Int64.to_int (get_64 b)
   | n -> n
 let get_string b =
   let start = b.pos in
@@ -182,13 +194,13 @@ let cache_size = 1 lsl 14
 type cache_bucket = int  (* 0 to cache_size - 1 *)
 
 type reader_cache = {
-  cache_loc : Int64.t array;
+  cache_loc : int array;
   cache_pred : int array;
-  mutable last_backtrace : Int64.t array;
+  mutable last_backtrace : int array;
 }
 
 let create_reader_cache () =
-  { cache_loc = Array.make cache_size 0L;
+  { cache_loc = Array.make cache_size 0;
     cache_pred = Array.make cache_size 0;
     last_backtrace = [| |] }
 
@@ -270,10 +282,6 @@ let log_new_loc s loc =
 
 let to_timestamp_64 t =
   t *. 1_000_000. |> Float.to_int |> Int64.of_int
-let of_timestamp_64 n =
-  Float.of_int (Int64.to_int n) /. 1_000_000.
-
-let to_unix_timestamp = of_timestamp_64
 
 type packet_header_info = {
   content_size: int; (* bytes, excluding header *)
@@ -316,7 +324,7 @@ let put_event_header b ev t =
                     event_header_time_len)
              (logand (Int64.to_int32 t) event_header_time_mask)) in
   put_32 b code
-let get_event_header info b =
+let[@inline] get_event_header info b =
   let code = get_32 b in
   let start_low = Int32.logand event_header_time_mask (Int64.to_int32 info.time_begin) in
   let time_low = Int32.logand event_header_time_mask code in
@@ -329,8 +337,7 @@ let get_event_header info b =
   let time =
     Int64.(add (logand info.time_begin (lognot (of_int32 event_header_time_mask)))
              (of_int32 time_low)) in
-  check_fmt "time in packet bounds" (info.time_begin <= time);
-  check_fmt "time in packet bounds" (time <= info.time_end);
+  check_fmt "time in packet bounds" (info.time_begin <= time && time <= info.time_end);
   let ev = event_of_code (Int32.(to_int (shift_right_logical code
                                            event_header_time_len))) in
   (ev, time)
@@ -425,7 +432,7 @@ let put_backtrace_slot b file_mtf defn_mtfs (id, loc) =
       put_string b defname)
 
 let get_backtrace_slot file_mtf defn_mtfs b =
-  let id = get_64 b in
+  let id = Int64.to_int (get_64 b) in
   let nlocs = get_8 b in
   let locs = List.init nlocs (fun _ ->
     let low = get_32 b in
@@ -596,21 +603,23 @@ let begin_event s ev =
   s.packet_times.t_end <- now;
   put_event_header s.packet ev now
 
+let[@inline never] put_bbuf_realloc bbuf pos (x : int) =
+  assert (pos = Array.length bbuf);
+  let new_size = Array.length bbuf * 2 in
+  let new_size = if new_size < 32 then 32 else new_size in
+  let new_bbuf = Array.make new_size x in
+  Array.blit bbuf 0 new_bbuf 0 pos;
+  new_bbuf
 
 let get_coded_backtrace ({ cache_loc ; cache_pred; _ } as cache) bt_length pos b =
   assert (pos <= Array.length cache.last_backtrace);
-  let put_bbuf bbuf pos x =
-    assert (pos <= Array.length bbuf);
+  let[@inline] put_bbuf bbuf pos (x : int) =
     if pos < Array.length bbuf then begin
-      bbuf.(pos) <- x;
+      Array.unsafe_set bbuf pos x;
       bbuf
-    end else begin
-      let new_size = Array.length bbuf * 2 in
-      let new_size = if new_size < 32 then 32 else new_size in
-      let new_bbuf = Array.make new_size x in
-      Array.blit bbuf 0 new_bbuf 0 pos;
-      new_bbuf
-    end in
+    end else
+      put_bbuf_realloc bbuf pos x
+    in
   let rec decode pred bbuf pos = function
     | 0 -> (bbuf, pos)
     | i ->
@@ -636,7 +645,7 @@ let get_coded_backtrace ({ cache_loc ; cache_pred; _ } as cache) bt_length pos b
            (i - 1) ncorrect
       | _ ->
          (* cache miss *)
-         let lit = get_64 b in
+         let lit = Int64.to_int (get_64 b) in
          cache_loc.(bucket) <- lit;
          decode bucket
            (put_bbuf bbuf pos lit) (pos + 1)
@@ -775,10 +784,10 @@ let log_alloc s is_major callstack length n_samples =
      let b' = { buf = b.buf; pos = bt_elem_off; pos_end = b.pos } in
      let decoded, decoded_len = get_coded_backtrace c ncodes common_pfx_len b' in
      assert (remaining b' = 0);
-     if (Array.sub decoded 0 decoded_len) <> (raw_stack |> Array.map Int64.of_int |> Array.to_list |> List.rev |> Array.of_list) then begin
+     if (Array.sub decoded 0 decoded_len) <> (raw_stack |> Array.to_list |> List.rev |> Array.of_list) then begin
     (raw_stack |> Array.map Int64.of_int |> Array.to_list |> List.rev |> Array.of_list) |> Array.iter (Printf.printf " %08Lx"); Printf.printf " !\n%!";
 
-     Array.sub decoded 0 decoded_len |> Array.iter (Printf.printf " %08Lx"); Printf.printf " !\n%!";
+     Array.sub decoded 0 decoded_len |> Array.iter (Printf.printf " %08x"); Printf.printf " !\n%!";
      failwith "bad coded backtrace"
      end);
 
@@ -909,23 +918,30 @@ let trace_until_exit ~sampling_rate ~filename =
   at_exit (fun () -> stop_tracing s)
 
 
+let trace_if_requested ?(sampling_rate=0.0001) () =
+  match Sys.getenv_opt "MEMTRACE" with
+  | None | Some "" -> ()
+  | Some filename ->
+     (* Prevent spawned OCaml programs from being traced *)
+     Unix.putenv "MEMTRACE" "";
+     trace_until_exit ~sampling_rate ~filename
+
 type obj_id = int
 type timestamp = Int64.t
-type timedelta = Int64.t
-type location_code = Int64.t
+type location_code = int
 
 type trace = {
   fd : Deps.in_file;
   info : trace_info;
   data_off : int;
   (* FIXME: opt to better hashtable *)
-  loc_table : (Int64.t, location list) Hashtbl.t
+  loc_table : location list IntTbl.t
 }
 
 let trace_info { info; _ } = info
 
 let lookup_location { loc_table; _ } code =
-  match Hashtbl.find loc_table code with
+  match IntTbl.find loc_table code with
   | v -> v
   | exception Not_found ->
     raise (Invalid_argument "invalid location code")
@@ -1004,10 +1020,10 @@ let parse_packet_events ~parse_backtraces file_mtf defn_mtfs loc_table cache sta
     | Ev_location ->
       let (id, loc) = get_backtrace_slot file_mtf defn_mtfs b in
       (*Printf.printf "%3d _ _ location\n" (b.pos - last_pos);*)
-      if Hashtbl.mem loc_table id then
-        check_fmt "consistent location info" (Hashtbl.find loc_table id = loc)
+      if IntTbl.mem loc_table id then
+        check_fmt "consistent location info" (IntTbl.find loc_table id = loc)
       else
-        Hashtbl.add loc_table id loc
+        IntTbl.add loc_table id loc
     | (Ev_alloc | Ev_short_alloc _) as evcode ->
       let info = get_alloc ~parse_backtraces evcode cache !alloc_id b in
       incr alloc_id;
@@ -1057,7 +1073,7 @@ let iter_trace {fd; loc_table; data_off; info = { start_time; _ } } ?(parse_back
     if (last_timestamp <= info.time_begin) && (last_alloc_id = info.alloc_id_begin) then begin
       if parse_backtraces && info.cache_verify_ix <> 0xffff then begin
         check_fmt "cache verification" (0 <= info.cache_verify_ix && info.cache_verify_ix < Array.length cache.cache_loc);
-        check_fmt "cache verification" (cache.cache_loc.(info.cache_verify_ix) = info.cache_verify_val);
+        check_fmt "cache verification" (cache.cache_loc.(info.cache_verify_ix) = Int64.to_int info.cache_verify_val);
         check_fmt "cache verification" (cache.cache_pred.(info.cache_verify_ix) = info.cache_verify_pred);
       end;
       let len = info.content_size in
@@ -1087,8 +1103,10 @@ let open_trace ~filename =
   check_fmt "trace info packet" (ev = Ev_trace_info);
   check_fmt "trace info packet" (evtime = packet_info.time_begin);
   let trace_info = get_trace_info b packet_info.time_begin file_size in
-  let loc_table = Hashtbl.create 20 in
+  let loc_table = IntTbl.create 20 in
   { fd; info = trace_info; data_off = b.pos; loc_table }
 
 let close_trace t =
   Deps.close_in t.fd
+
+module IdTbl = IntTbl

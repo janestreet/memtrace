@@ -79,8 +79,8 @@ end
 
 module Loc_tbl = Hashtbl.Make (struct
   type t = location_code
-  let hash (x : location_code) = Int64.(shift_right (mul (x :> int64) 984372984721L) 17 |> to_int)
-  let equal (x : location_code) (y : location_code) = Int64.equal (x :> int64) (y :> int64)
+  let hash (x : location_code) = ((x :> int) * 984372984721) lsr 17
+  let equal (x : location_code) (y : location_code) = (x = y)
 end)
 
 module Str_tbl = Hashtbl.Make (struct
@@ -139,7 +139,7 @@ let rec describe_location ?(max_discard=2) trace buf i =
   match lookup_location trace buf.(i) with
   | [] when i > 0 && max_discard > 0 ->
     describe_location ~max_discard:(max_discard - 1) trace buf (i-1)
-  | [] -> "??", Printf.sprintf "#%Lx" (buf.(i) :> int64), 0, 0, 0
+  | [] -> "??", Printf.sprintf "#%x" (buf.(i) :> int), 0, 0, 0
   | locs ->
     let l = (List.nth locs (List.length locs - 1)) in
     l.filename, l.defname, l.line, l.start_char, l.end_char
