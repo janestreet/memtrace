@@ -118,6 +118,12 @@ end = struct
       | Front_sentinal of { mutable next : t }
       | Back_sentinal of { mutable previous : t }
       | Root of { children : t Tbl.t; }
+      | Thin_branch of
+          { mutable children : child_list;
+            mutable no_of_children : int;
+            mutable incoming : int;
+            mutable descendents_count : int;
+            mutable heavy_descendents_count : int; }
       | Branch of
           { children : t Tbl.t;
             mutable incoming : int;
@@ -129,8 +135,14 @@ end = struct
             mutable descendents_count : int;
             mutable heavy_descendents_count : int; }
 
+    and child_list =
+      { key : X.t; mutable child : t; mutable next : child_list }
+
     type queue =
       { front : t } [@@unboxed]
+
+    let fat_to_thin = 20
+    let thin_to_fat = 30
 
     let same t1 t2 = t1 == t2
 
@@ -151,6 +163,12 @@ end = struct
           count; delta; max_child_delta; }
       in
       t
+
+    let rec dummy_child_list =
+      { key = X.dummy; child = dummy; next = dummy_child_list }
+
+    let singleton_child_list key child =
+      { key; child; next = dummy_child_list; }
 
     let label t =
       let rec loop acc t =
@@ -179,31 +197,52 @@ end = struct
 
     let next t =
       match t.kind with
-      | Dummy | Back_sentinal _ | Suffix_leaf _ | Root _ | Branch _ ->
+      | Dummy | Back_sentinal _ | Suffix_leaf _
+      | Root _ | Branch _ | Thin_branch _ ->
           assert false
       | Front_sentinal { next; _ } | Leaf { next; _ } -> next
 
     let set_next t ~next =
       match t.kind with
-      | Dummy | Back_sentinal _ | Suffix_leaf _ | Root _ | Branch _ ->
+      | Dummy | Back_sentinal _ | Suffix_leaf _
+      | Root _ | Branch _ | Thin_branch _ ->
           assert false
       | Front_sentinal k -> k.next <- next
       | Leaf k -> k.next <- next
 
     let set_previous t ~previous =
       match t.kind with
-      | Dummy | Front_sentinal _ | Suffix_leaf _ | Root _ | Branch _ ->
+      | Dummy | Front_sentinal _ | Suffix_leaf _
+      | Root _ | Branch _ | Thin_branch _ ->
           assert false
       | Back_sentinal k -> k.previous <- previous
       | Leaf k -> k.previous <- previous
 
+    let rec set_child_in_list cl char new_child =
+      if X.equal cl.key char then cl.child <- new_child
+      else set_child_in_list cl.next char new_child
+
     let set_child ~parent ~key ~child =
       match parent.kind with
       | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
-      | Leaf _ | Suffix_leaf _ -> failwith "set_child: No children"
-      | Root { children } -> Tbl.replace children key child
+      | Leaf _ | Suffix_leaf _ ->
+          failwith "set_child: No such child"
+      | Root { children } ->
+          Tbl.replace children key child
+      | Thin_branch { children; _ } ->
+          set_child_in_list children key child
       | Branch { children; _ } ->
           Tbl.replace children key child
+
+    let tbl_of_child_list cl =
+      let tbl = Tbl.create thin_to_fat in
+      let current = ref cl in
+      while !current != dummy_child_list do
+        let cl = !current in
+        Tbl.add tbl cl.key cl.child;
+        current := cl.next;
+      done;
+      tbl
 
     let add_child ~parent ~key ~child =
       match parent.kind with
@@ -212,25 +251,47 @@ end = struct
           set_previous next ~previous;
           set_next previous ~next;
           let incoming = 1 in
-          let children = Tbl.create 1 in
-          Tbl.add children key child;
+          let no_of_children = 1 in
+          let children = singleton_child_list key child in
           let descendents_count = 0 in
           let heavy_descendents_count = 0 in
           let new_kind =
-            Branch { children; incoming;
-                     descendents_count; heavy_descendents_count }
+            Thin_branch
+              { children; no_of_children; incoming;
+                descendents_count; heavy_descendents_count }
           in
           parent.kind <- new_kind
       | Suffix_leaf { incoming; descendents_count; heavy_descendents_count } ->
           let incoming = incoming + 1 in
-          let children = Tbl.create 1 in
-          Tbl.add children key child;
+          let no_of_children = 1 in
+          let children = singleton_child_list key child in
           let new_kind =
-            Branch { children; incoming;
-                     descendents_count; heavy_descendents_count }
+            Thin_branch
+              { children; no_of_children; incoming;
+                descendents_count; heavy_descendents_count }
           in
           parent.kind <- new_kind
       | Root { children } -> Tbl.add children key child
+      | Thin_branch ({ children; no_of_children; incoming; _ } as k) ->
+          let no_of_children = no_of_children + 1 in
+          if no_of_children >= thin_to_fat then begin
+            let children = tbl_of_child_list children in
+            Tbl.add children key child;
+            let descendents_count = k.descendents_count in
+            let heavy_descendents_count = k.descendents_count in
+            let new_kind =
+              Branch
+                { children; incoming;
+                  descendents_count; heavy_descendents_count }
+            in
+            parent.kind <- new_kind
+          end else begin
+            let next = children in
+            let children = { key; child; next } in
+            k.children <- children;
+            k.incoming <- incoming + 1;
+            k.no_of_children <- no_of_children
+          end
       | Branch ({ children; incoming; _ } as k) ->
           Tbl.add children key child;
           k.incoming <- incoming + 1
@@ -243,6 +304,17 @@ end = struct
       set_previous next ~previous:t;
       set_next previous ~next:t
 
+    let child_list_of_tbl tbl =
+      Tbl.fold (fun key child next -> { key; child; next })
+        tbl dummy_child_list
+
+    let rec remove_from_child_list previous cl char =
+      if X.equal cl.key char then begin
+        previous.next <- cl.next;
+      end else begin
+        remove_from_child_list cl cl.next char
+      end
+
     let remove_child ~parent ~child =
       let key = child.edge_key in
       match parent.kind with
@@ -250,20 +322,57 @@ end = struct
           assert false
       | Root { children } ->
           Tbl.remove children key; false
-      | Branch ({ children; incoming; _ } as k) ->
-          Tbl.remove children key;
+      | Thin_branch ({ children; incoming; _ } as k) ->
+          if X.equal children.key key then begin
+            k.children <- children.next
+          end else begin
+            remove_from_child_list children children.next key
+          end;
           let incoming = incoming - 1 in
           if incoming = 0 then true
           else begin
-            k.incoming <- incoming;
+            let no_of_children = k.no_of_children - 1 in
+            if no_of_children = 0 then begin
+              let descendents_count = k.descendents_count in
+              let heavy_descendents_count = k.descendents_count in
+              let new_kind =
+                Suffix_leaf
+                  { incoming;
+                    descendents_count; heavy_descendents_count; }
+              in
+              parent.kind <- new_kind
+            end else begin
+              k.incoming <- incoming;
+              k.no_of_children <- no_of_children
+            end;
             false
           end
+      | Branch ({ children; incoming; _ } as k) ->
+          Tbl.remove children key;
+          let no_of_children = Tbl.length children in
+          if no_of_children <= fat_to_thin then begin
+            let children = child_list_of_tbl children in
+            let descendents_count = k.descendents_count in
+            let heavy_descendents_count = k.descendents_count in
+            let new_kind =
+              Thin_branch
+                { children; no_of_children; incoming;
+                  descendents_count; heavy_descendents_count; }
+            in
+            parent.kind <- new_kind
+          end else begin
+            let incoming = incoming - 1 in
+            k.incoming <- incoming
+          end;
+          false
 
     let set_suffix t ~suffix =
       t.suffix_link <- suffix;
       match suffix.kind with
       | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
       | Root _ -> ()
+      | Thin_branch k ->
+          k.incoming <- k.incoming + 1
       | Branch k ->
           k.incoming <- k.incoming + 1
       | Suffix_leaf k ->
@@ -292,13 +401,14 @@ end = struct
             k.incoming <- incoming;
             false
           end
+      | Thin_branch ({ incoming; _ } as k) ->
+          let incoming = incoming - 1 in
+          k.incoming <- incoming;
+          false
       | Branch ({ incoming; _ } as k) ->
           let incoming = incoming - 1 in
-          if incoming = 0 then true
-          else begin
-            k.incoming <- incoming;
-            false
-          end
+          k.incoming <- incoming;
+          false
 
     let add_leaf t ~queue ~array ~index =
       let edge_array = array in
@@ -357,14 +467,15 @@ end = struct
         let new_node =
           let edge_len = len in
           let suffix_link = dummy in
-          let children = Tbl.create 2 in
-          Tbl.add children child_key child;
           let incoming = 1 in
+          let no_of_children = 1 in
+          let children = singleton_child_list child_key child in
           let descendents_count = 0 in
           let heavy_descendents_count = 0 in
           let kind =
-            Branch { children; incoming;
-                     descendents_count; heavy_descendents_count; }
+            Thin_branch
+              { children; no_of_children; incoming;
+                descendents_count; heavy_descendents_count }
           in
           let count = 0 in
           let delta = parent.max_child_delta in
@@ -394,21 +505,34 @@ end = struct
         t.max_child_delta <- delta
       end
 
+    let rec find_child_in_list cl char =
+      if cl == dummy_child_list then None
+      else if X.equal cl.key char then Some cl.child
+      else find_child_in_list cl.next char
+
     let find_child t char =
       match t.kind with
       | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
       | Leaf _ | Suffix_leaf _ -> None
+      | Thin_branch { children; _ } ->
+          find_child_in_list children char
       | Root { children; _ } | Branch { children; _ } ->
           Tbl.find_opt children char
+
+    let rec get_child_in_list cl char =
+      if X.equal cl.key char then cl.child
+      else get_child_in_list cl.next char
 
     let get_child t char =
       match t.kind with
       | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
       | Leaf _ | Suffix_leaf _ -> failwith "get_child: No children"
+      | Thin_branch { children; _ } -> get_child_in_list children char
       | Root { children; _ } | Branch { children; _ } ->
           match Tbl.find children char with
           | child -> child
           | exception Not_found -> failwith "get_child: No such child"
+
 
     let edge_array t = t.edge_array
 
@@ -433,6 +557,7 @@ end = struct
       | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
       | Leaf _ | Root _ -> ()
       | Suffix_leaf k -> k.descendents_count <- 0
+      | Thin_branch k -> k.descendents_count <- 0
       | Branch k -> k.descendents_count <- 0
 
     let add_to_descendents_count t diff =
@@ -440,6 +565,7 @@ end = struct
       | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
       | Leaf _ -> assert false
       | Suffix_leaf k -> k.descendents_count <- k.descendents_count + diff
+      | Thin_branch k -> k.descendents_count <- k.descendents_count + diff
       | Branch k -> k.descendents_count <- k.descendents_count + diff
       | Root _ -> ()
 
@@ -447,7 +573,10 @@ end = struct
       match t.kind with
       | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
       | Leaf _ -> assert false
-      | Suffix_leaf k -> k.heavy_descendents_count <- k.heavy_descendents_count + diff
+      | Suffix_leaf k ->
+          k.heavy_descendents_count <- k.heavy_descendents_count + diff
+      | Thin_branch k ->
+          k.heavy_descendents_count <- k.heavy_descendents_count + diff
       | Branch k -> k.heavy_descendents_count <- k.heavy_descendents_count + diff
       | Root _ -> ()
 
@@ -456,6 +585,7 @@ end = struct
       | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
       | Leaf _ -> 0
       | Suffix_leaf { descendents_count; _ }
+      | Thin_branch { descendents_count; _ }
       | Branch { descendents_count; _ } -> descendents_count
       | Root _ -> assert false
 
@@ -464,6 +594,7 @@ end = struct
       | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
       | Leaf _ -> 0
       | Suffix_leaf { heavy_descendents_count; _ }
+      | Thin_branch { heavy_descendents_count; _ }
       | Branch { heavy_descendents_count; _ } -> heavy_descendents_count
       | Root _ -> assert false
 
@@ -509,17 +640,39 @@ end = struct
       let light_total = total - heavy_descendents_count in
       (label t, light_total, total, total + t.delta)
 
+    let iter_over_child_list f cl =
+      let current = ref cl in
+      while !current != dummy_child_list do
+        let cl = !current in
+        f cl.child;
+        current := cl.next;
+      done
+
     let iter_children f t =
       match t.kind with
       | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
       | Leaf _ | Suffix_leaf _ -> ()
+      | Thin_branch { children; _ } ->
+          iter_over_child_list f children
       | Root { children; _ } | Branch { children; _ } ->
           Tbl.iter (fun _ n -> f n) children
+
+    let fold_over_child_list f cl acc =
+      let acc = ref acc in
+      let current = ref cl in
+      while !current != dummy_child_list do
+        let cl = !current in
+        acc := f cl.child !acc;
+        current := cl.next;
+      done;
+      !acc
 
     let fold_children f t acc =
       match t.kind with
       | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
       | Leaf _ | Suffix_leaf _ -> acc
+      | Thin_branch { children; _ } ->
+          fold_over_child_list f children acc
       | Root { children; _ } | Branch { children; _ } ->
           Tbl.fold (fun _ n -> f n) children acc
 
@@ -555,7 +708,8 @@ end = struct
       if upper_bound < threshold then begin
         match t.kind with
         | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
-        | Root _ | Branch _ | Suffix_leaf _ -> failwith "squash: Not a leaf"
+        | Root _ | Thin_branch _
+        | Branch _ | Suffix_leaf _ -> failwith "squash: Not a leaf"
         | Leaf ({ previous; next } as k) ->
             set_previous next ~previous;
             set_next previous ~next;
