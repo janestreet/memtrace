@@ -28,7 +28,7 @@ let identify filename =
   let days = [| "Sun"; "Mon"; "Tue"; "Wed"; "Thu"; "Fri"; "Sat" |] in
   let months = [| "Jan"; "Feb"; "Mar"; "Apr"; "May"; "Jun"; "Aug"; "Sep"; "Oct"; "Nov"; "Dec" |] in
   Printf.printf "   of %s\n" info.executable_name;
-  Printf.printf "   at %s %s %d %d:%d:%d %d\n"
+  Printf.printf "   at %s %s %d %d:%d:%d %d UTC\n"
     days.(tm.tm_wday) months.(tm.tm_mon) tm.tm_mday tm.tm_hour tm.tm_min tm.tm_sec (tm.tm_year + 1900);
   Printf.printf "   on host %s (%d-bit), pid %Ld, sample rate %.1e\n"
     info.host_name info.word_size info.pid info.sample_rate;
