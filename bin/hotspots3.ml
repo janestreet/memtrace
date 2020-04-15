@@ -56,6 +56,9 @@ end = struct
     val add_leaf :
       t -> queue:Queue.t -> array:X.t array -> index:int -> t
 
+    val add_suffix_leaf :
+      t -> array:X.t array -> index:int -> unit
+
     val split_edge : parent:t -> child:t -> len:int -> t
 
     val set_suffix : t -> suffix:t -> unit
@@ -319,6 +322,30 @@ end = struct
       set_next previous ~next:node;
       add_child ~parent:t ~key:edge_key ~child:node;
       node
+
+    let add_suffix_leaf t ~array ~index =
+      let edge_array = array in
+      let edge_start = index in
+      let edge_len = (Array.length array) - index in
+      let edge_key = edge_array.(edge_start) in
+      let parent = t in
+      let suffix_link = dummy in
+      let incoming = 0 in
+      let descendents_count = 0 in
+      let heavy_descendents_count = 0 in
+      let kind =
+        Suffix_leaf
+          { incoming; descendents_count; heavy_descendents_count; }
+      in
+      let count = 0 in
+      let max_child_delta = t.max_child_delta in
+      let delta = max_child_delta in
+      let node =
+        { edge_array; edge_start; edge_len; edge_key;
+          parent; suffix_link; kind;
+          count; delta; max_child_delta; }
+      in
+      add_child ~parent:t ~key:edge_key ~child:node
 
     let split_edge ~parent ~child ~len =
       if (len = 0) then parent
@@ -815,11 +842,13 @@ end = struct
       while (!j <= base + index)
             && not (Cursor.scan active ~array ~index) do
         let parent = Cursor.split_at active in
-        let leaf = Node.add_leaf parent ~queue ~array ~index in
         begin
           match !destination with
-          | None -> destination := Some leaf
-          | Some _ -> ()
+          | None ->
+              let leaf = Node.add_leaf parent ~queue ~array ~index in
+              destination := Some leaf
+          | Some _ ->
+              Node.add_suffix_leaf parent ~array ~index
         end;
         Cursor.goto_suffix active parent;
         if not (Node.has_suffix parent) then begin
@@ -1051,7 +1080,6 @@ let count ~frequency ~error ~filename =
       | Collect _ -> ());
   let results = Loc_hitters.output shh ~frequency in
   Format.printf "%a" (print_report trace) results;
-  ignore frequency;
   close_trace trace
 
 let default_frequency = 0.03
