@@ -197,6 +197,14 @@ end = struct
     let set_child ~parent ~key ~child =
       match parent.kind with
       | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
+      | Leaf _ | Suffix_leaf _ -> failwith "set_child: No children"
+      | Root { children } -> Tbl.replace children key child
+      | Branch { children; _ } ->
+          Tbl.replace children key child
+
+    let add_child ~parent ~key ~child =
+      match parent.kind with
+      | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
       | Leaf { next; previous } ->
           set_previous next ~previous;
           set_next previous ~next;
@@ -219,9 +227,9 @@ end = struct
                      descendents_count; heavy_descendents_count }
           in
           parent.kind <- new_kind
-      | Root { children } -> Tbl.replace children key child
+      | Root { children } -> Tbl.add children key child
       | Branch ({ children; incoming; _ } as k) ->
-          Tbl.replace children key child;
+          Tbl.add children key child;
           k.incoming <- incoming + 1
 
     let convert_to_leaf ~queue t =
@@ -309,7 +317,7 @@ end = struct
       in
       set_previous next ~previous:node;
       set_next previous ~next:node;
-      set_child ~parent:t ~key:edge_key ~child:node;
+      add_child ~parent:t ~key:edge_key ~child:node;
       node
 
     let split_edge ~parent ~child ~len =
