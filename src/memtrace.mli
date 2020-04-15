@@ -22,6 +22,7 @@ type trace_info = {
   ocaml_runtime_params : string;
   pid : Int64.t;
   start_time : Int64.t;
+  file_size : Int64.t;
 }
 val trace_info : trace -> trace_info
 

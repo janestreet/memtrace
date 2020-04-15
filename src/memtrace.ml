@@ -806,6 +806,7 @@ type trace_info = {
   ocaml_runtime_params : string;
   pid : Int64.t;
   start_time : Int64.t;
+  file_size : Int64.t;
 }
 
 let put_trace_info b sample_rate =
@@ -816,7 +817,7 @@ let put_trace_info b sample_rate =
   put_string b (Sys.runtime_parameters ());
   put_64 b (Int64.of_int (Unix.getpid ()))
 
-let get_trace_info b start_time =
+let get_trace_info b start_time file_size =
   let sample_rate = get_float b in
   let word_size = get_8 b in
   let executable_name = get_string b in
@@ -829,7 +830,8 @@ let get_trace_info b start_time =
     executable_name;
     host_name;
     ocaml_runtime_params;
-    pid }
+    pid;
+    file_size }
 
 let start_tracing ~sampling_rate ~filename =
   let dest = Deps.open_out filename in
@@ -1075,6 +1077,7 @@ let iter_trace {fd; loc_table; data_off; info = { start_time; _ } } ?(parse_back
 
 let open_trace ~filename =
   let fd = Deps.open_in filename in
+  let file_size = (Unix.LargeFile.fstat fd).st_size in
   (* FIXME magic numbers *)
   let buf = Bytes.make (1 lsl 15) '\000' in
   let b = read_into fd buf 0 in
@@ -1083,7 +1086,7 @@ let open_trace ~filename =
   let ev, evtime = get_event_header packet_info b in
   check_fmt "trace info packet" (ev = Ev_trace_info);
   check_fmt "trace info packet" (evtime = packet_info.time_begin);
-  let trace_info = get_trace_info b packet_info.time_begin in
+  let trace_info = get_trace_info b packet_info.time_begin file_size in
   let loc_table = Hashtbl.create 20 in
   { fd; info = trace_info; data_off = b.pos; loc_table }
 
