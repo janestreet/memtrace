@@ -887,13 +887,17 @@ module Location = struct
   let equal (x : t) (y : t) =
     Int.equal (x :> int) (y :> int)
 
+  let compare (x : t) (y : t) =
+    Int.compare (x :> int) (y :> int)
+
   let dummy = (Obj.magic (-1L : int64) : t)
+
+  let print ppf i =
+    Format.fprintf ppf "%x" (i : t :> int)
 
 end
 
 module Loc_hitters = Substring_heavy_hitters(Location)
-
-module Loc_tbl = Hashtbl.Make(Location)
 
 let wordsize = 8.  (* FIXME: store this in the trace *)
 
@@ -952,40 +956,94 @@ let print_report trace ppf (hitters, total) =
     print_bytes (float_of_int total /. tinfo.sample_rate *. wordsize)
     (print_hitters trace tinfo total) hitters
 
+module Seen : sig
+
+  type t
+
+  val empty : t
+
+  val mem : t -> Location.t -> bool
+
+  val add : t -> Location.t -> int -> t
+
+  val size : t -> int
+
+  val pop_until : t -> int -> t
+
+end  = struct
+
+  module Loc_set = Set.Make(Location)
+
+  type t =
+    | Nil
+    | Cons of
+        { set : Loc_set.t;
+          size : int;
+          depth : int;
+          previous : t; }
+
+  let empty = Nil
+
+  let set = function
+    | Nil -> Loc_set.empty
+    | Cons { set; _ } -> set
+
+  let size = function
+    | Nil -> 0
+    | Cons { size; _ } -> size
+
+  let mem seen loc =
+    Loc_set.mem loc (set seen)
+
+  let add seen loc depth =
+    match seen with
+    | Nil ->
+        let set = Loc_set.singleton loc in
+        let size = 1 in
+        let previous = seen in
+        Cons { set; size; depth; previous }
+    | Cons { set; size; _ } ->
+        let set = Loc_set.add loc set in
+        let size = size + 1 in
+        let previous = seen in
+        Cons { set; size; depth; previous }
+
+  let rec pop_until seen until =
+    match seen with
+    | Nil -> seen
+    | Cons{depth; previous; _ } ->
+        if depth < until then seen
+        else pop_until previous until
+
+end
+
 let count ~frequency ~error ~filename =
   let trace = open_trace ~filename in
   let shh = Loc_hitters.create ~error in
-  let seen = Loc_tbl.create 100 in
+  let seen = ref Seen.empty in
   iter_trace trace
     (fun _time ev ->
        match ev with
        | Alloc {obj_id=_; length=_; nsamples; is_major=_;
                 backtrace_buffer; backtrace_length; common_prefix} ->
-           let common = ref 0 in
            let rev_trace = ref [] in
-           Loc_tbl.clear seen;
-           for i = 0 to common_prefix - 1 do
-             let loc = backtrace_buffer.(i) in
-             if not (Loc_tbl.mem seen loc) then begin
-               incr common;
-               Loc_tbl.add seen loc ()
-             end
-           done;
+           seen := Seen.pop_until !seen common_prefix;
+           let common = Seen.size !seen in
            for i = common_prefix to backtrace_length - 1 do
              let loc = backtrace_buffer.(i) in
-             if not (Loc_tbl.mem seen loc) then begin
+             if not (Seen.mem !seen loc) then begin
                rev_trace := loc :: !rev_trace;
-               Loc_tbl.add seen loc ()
+               seen := Seen.add !seen loc i
              end
            done;
-           let common_prefix = !common in
            let extension = Array.of_list (List.rev !rev_trace) in
-           Loc_hitters.insert shh ~common_prefix
+           Loc_hitters.insert shh ~common_prefix:common
              extension ~count:nsamples
       | Promote _ -> ()
       | Collect _ -> ());
   let results = Loc_hitters.output shh ~frequency in
   Format.printf "%a" (print_report trace) results;
+  ignore frequency;
   close_trace trace
 
 let default_frequency = 0.03
