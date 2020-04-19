@@ -57,7 +57,7 @@ end = struct
       t -> queue:Queue.t -> array:X.t array -> index:int -> t
 
     val add_suffix_leaf :
-      t -> array:X.t array -> index:int -> unit
+      t -> array:X.t array -> index:int -> t
 
     val split_edge : parent:t -> child:t -> len:int -> t
 
@@ -140,6 +140,11 @@ end = struct
 
     type queue =
       { front : t } [@@unboxed]
+
+    let is_root t =
+      match t.kind with
+      | Root _ -> true
+      | _ -> false
 
     let fat_to_thin = 20
     let thin_to_fat = 30
@@ -278,7 +283,7 @@ end = struct
             let children = tbl_of_child_list children in
             Tbl.add children key child;
             let descendents_count = k.descendents_count in
-            let heavy_descendents_count = k.descendents_count in
+            let heavy_descendents_count = k.heavy_descendents_count in
             let new_kind =
               Branch
                 { children; incoming;
@@ -334,7 +339,7 @@ end = struct
             let no_of_children = k.no_of_children - 1 in
             if no_of_children = 0 then begin
               let descendents_count = k.descendents_count in
-              let heavy_descendents_count = k.descendents_count in
+              let heavy_descendents_count = k.heavy_descendents_count in
               let new_kind =
                 Suffix_leaf
                   { incoming;
@@ -353,7 +358,7 @@ end = struct
           if no_of_children <= fat_to_thin then begin
             let children = child_list_of_tbl children in
             let descendents_count = k.descendents_count in
-            let heavy_descendents_count = k.descendents_count in
+            let heavy_descendents_count = k.heavy_descendents_count in
             let new_kind =
               Thin_branch
                 { children; no_of_children; incoming;
@@ -455,7 +460,8 @@ end = struct
           parent; suffix_link; kind;
           count; delta; max_child_delta; }
       in
-      add_child ~parent:t ~key:edge_key ~child:node
+      add_child ~parent:t ~key:edge_key ~child:node;
+      node
 
     let split_edge ~parent ~child ~len =
       if (len = 0) then parent
@@ -478,8 +484,8 @@ end = struct
                 descendents_count; heavy_descendents_count }
           in
           let count = 0 in
-          let delta = parent.max_child_delta in
           let max_child_delta = parent.max_child_delta in
+          let delta = max_child_delta in
           { edge_array; edge_start; edge_len; edge_key;
             parent; suffix_link; kind;
             count; delta; max_child_delta}
@@ -491,11 +497,6 @@ end = struct
         set_child ~parent ~key:edge_key ~child:new_node;
         new_node
       end
-
-    let is_root t =
-      match t.kind with
-      | Root _ -> true
-      | _ -> false
 
     let add_count t count =
       t.count <- t.count + count
@@ -533,7 +534,6 @@ end = struct
           | child -> child
           | exception Not_found -> failwith "get_child: No such child"
 
-
     let edge_array t = t.edge_array
 
     let edge_start t = t.edge_start
@@ -556,9 +556,15 @@ end = struct
       match t.kind with
       | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
       | Leaf _ | Root _ -> ()
-      | Suffix_leaf k -> k.descendents_count <- 0
-      | Thin_branch k -> k.descendents_count <- 0
-      | Branch k -> k.descendents_count <- 0
+      | Suffix_leaf k ->
+        k.descendents_count <- 0;
+        k.heavy_descendents_count <- 0
+      | Thin_branch k ->
+        k.descendents_count <- 0;
+        k.heavy_descendents_count <- 0
+      | Branch k ->
+        k.descendents_count <- 0;
+        k.heavy_descendents_count <- 0
 
     let add_to_descendents_count t diff =
       match t.kind with
@@ -681,26 +687,20 @@ end = struct
       let suffix = t.suffix_link in
       let count = t.count in
       let delta = t.delta in
-      if not (same parent dummy) then begin
-        let grand_parent = t.parent.suffix_link in
-        add_count parent count;
-        add_child_delta parent (count + delta);
-        if not (same grand_parent dummy) then begin
-          add_count grand_parent (-count)
-        end;
-        if (remove_child ~parent ~child:t) then begin
-          let upper_bound = parent.count + parent.delta in
-          if upper_bound < threshold then squash_detached ~queue ~threshold parent
-          else convert_to_leaf ~queue parent
-        end
+      let grand_parent = t.parent.suffix_link in
+      add_count parent count;
+      add_child_delta parent (count + delta);
+      add_count grand_parent (-count);
+      if (remove_child ~parent ~child:t) then begin
+        let upper_bound = parent.count + parent.delta in
+        if upper_bound < threshold then squash_detached ~queue ~threshold parent
+        else convert_to_leaf ~queue parent
       end;
-      if not (same suffix dummy) then begin
-        add_count suffix count;
-        if (remove_incoming suffix) then begin
-          let upper_bound = suffix.count + suffix.delta in
-          if upper_bound < threshold then squash_detached ~queue ~threshold suffix
-          else convert_to_leaf ~queue suffix
-        end
+      add_count suffix count;
+      if (remove_incoming suffix) then begin
+        let upper_bound = suffix.count + suffix.delta in
+        if upper_bound < threshold then squash_detached ~queue ~threshold suffix
+        else convert_to_leaf ~queue suffix
       end
 
     let maybe_squash_leaf ~queue ~threshold t =
@@ -959,13 +959,17 @@ end = struct
       bucket_size; current_bucket; remaining_in_current_bucket;
       active; previous_length; state }
 
-  let ensure_suffixes cursor node =
-    let current = ref node in
-    while not (Node.has_suffix !current) do
-      Cursor.goto_suffix cursor !current;
-      let suffix = Cursor.split_at cursor in
-      Node.set_suffix !current ~suffix;
-      current := suffix
+  let update_descendent_counts ~threshold t =
+    let nodes : Node.t list array = Array.make (t.max_length + 1) [] in
+    let rec loop depth node =
+      Node.reset_descendents_count node;
+      let depth = depth + Node.edge_length node in
+      nodes.(depth) <- node :: nodes.(depth);
+      Node.iter_children (loop depth) node
+    in
+    loop 0 t.root;
+    for i = t.max_length downto 0 do
+      List.iter (Node.update_parents_descendents_counts ~threshold) nodes.(i)
     done
 
   let compress t =
@@ -990,35 +994,39 @@ end = struct
         let array = Array.append common array in
         array, total_len, 0
     in
-    let j = ref 0 in
-    let destination = ref None in
-    for index = 0 to len - 1 do
-      while (!j <= base + index)
-            && not (Cursor.scan active ~array ~index) do
+    let rec loop array len base queue active index j is_suffix =
+      if index >= len then begin
+        Cursor.split_at active
+      end else begin
+        loop_inner array len base queue active index j is_suffix
+      end
+    and loop_inner array len base queue active index j is_suffix =
+      if j > base + index then begin
+        loop array len base queue active (index + 1) j is_suffix
+      end else if Cursor.scan active ~array ~index then begin
+        loop array len base queue active (index + 1) j is_suffix
+      end else begin
         let parent = Cursor.split_at active in
-        begin
-          match !destination with
-          | None ->
-              let leaf = Node.add_leaf parent ~queue ~array ~index in
-              destination := Some leaf
-          | Some _ ->
-              Node.add_suffix_leaf parent ~array ~index
-        end;
         Cursor.goto_suffix active parent;
+        let leaf =
+          if is_suffix then
+            Node.add_suffix_leaf parent ~array ~index
+          else
+            Node.add_leaf parent ~queue ~array ~index
+        in
         if not (Node.has_suffix parent) then begin
           let suffix = Cursor.split_at active in
           Node.set_suffix parent ~suffix
         end;
-        incr j
-      done
-    done;
-    let destination =
-      match !destination with
-      | Some destination -> destination
-      | None -> Cursor.split_at active
+        let leaf_suffix =
+          loop_inner array len base queue active index (j + 1) true
+        in
+        Node.set_suffix leaf ~suffix:leaf_suffix;
+        leaf
+      end
     in
+    let destination = loop array len base queue active 0 0 false in
     Node.add_count destination count;
-    ensure_suffixes active destination;
     let remaining = t.remaining_in_current_bucket - 1 in
     if remaining <= 0 then begin
       t.current_bucket <- t.current_bucket + 1;
@@ -1034,19 +1042,6 @@ end = struct
       t.previous_length <- total_len;
       t.state <- Uncompressed
     end
-
-  let update_descendent_counts ~threshold t =
-    let nodes : Node.t list array = Array.make (t.max_length + 1) [] in
-    let rec loop depth node =
-      Node.reset_descendents_count node;
-      let depth = depth + Node.edge_length node in
-      nodes.(depth) <- node :: nodes.(depth);
-      Node.iter_children (loop depth) node
-    in
-    loop 0 t.root;
-    for i = t.max_length downto 0 do
-      List.iter (Node.update_parents_descendents_counts ~threshold) nodes.(i)
-    done
 
   let output t ~frequency =
     let threshold =
