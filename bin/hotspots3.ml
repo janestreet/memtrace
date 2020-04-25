@@ -373,6 +373,9 @@ end = struct
 
     let set_suffix t ~suffix =
       t.suffix_link <- suffix;
+      let max_delta = suffix.max_child_delta in
+      t.delta <- max_delta;
+      t.max_child_delta <- max_delta;
       match suffix.kind with
       | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
       | Root _ -> ()
@@ -426,8 +429,8 @@ end = struct
       let previous = queue.front in
       let kind = Leaf { next; previous } in
       let count = 0 in
-      let max_child_delta = t.max_child_delta in
-      let delta = max_child_delta in
+      let max_child_delta = 0 in
+      let delta = 0 in
       let node =
         { edge_array; edge_start; edge_len; edge_key;
           parent; suffix_link; kind;
@@ -453,8 +456,8 @@ end = struct
           { incoming; descendents_count; heavy_descendents_count; }
       in
       let count = 0 in
-      let max_child_delta = t.max_child_delta in
-      let delta = max_child_delta in
+      let max_child_delta = 0 in
+      let delta = 0 in
       let node =
         { edge_array; edge_start; edge_len; edge_key;
           parent; suffix_link; kind;
@@ -484,8 +487,8 @@ end = struct
                 descendents_count; heavy_descendents_count }
           in
           let count = 0 in
-          let max_child_delta = parent.max_child_delta in
-          let delta = max_child_delta in
+          let max_child_delta = 0 in
+          let delta = 0 in
           { edge_array; edge_start; edge_len; edge_key;
             parent; suffix_link; kind;
             count; delta; max_child_delta}
@@ -689,7 +692,6 @@ end = struct
       let delta = t.delta in
       let grand_parent = t.parent.suffix_link in
       add_count parent count;
-      add_child_delta parent (count + delta);
       add_count grand_parent (-count);
       if (remove_child ~parent ~child:t) then begin
         let upper_bound = parent.count + parent.delta in
@@ -697,6 +699,7 @@ end = struct
         else convert_to_leaf ~queue parent
       end;
       add_count suffix count;
+      add_child_delta suffix (count + delta);
       if (remove_incoming suffix) then begin
         let upper_bound = suffix.count + suffix.delta in
         if upper_bound < threshold then squash_detached ~queue ~threshold suffix
@@ -1014,12 +1017,17 @@ end = struct
           else
             Node.add_leaf parent ~queue ~array ~index
         in
-        if not (Node.has_suffix parent) then begin
-          let suffix = Cursor.split_at active in
-          Node.set_suffix parent ~suffix
-        end;
         let leaf_suffix =
-          loop_inner array len base queue active index (j + 1) true
+          if Node.has_suffix parent then begin
+            loop_inner array len base queue active index (j + 1) true
+          end else begin
+            let suffix = Cursor.split_at active in
+            let leaf_suffix =
+              loop_inner array len base queue active index (j + 1) true
+            in
+            Node.set_suffix parent ~suffix;
+            leaf_suffix
+          end
         in
         Node.set_suffix leaf ~suffix:leaf_suffix;
         leaf
