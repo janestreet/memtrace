@@ -14,6 +14,10 @@ module type Char = sig
 
   val dummy : t
 
+  val print : Format.formatter -> t -> unit
+
+  val print_array : Format.formatter -> t array -> unit
+
 end
 
 module Substring_heavy_hitters (X : Char) : sig
@@ -34,13 +38,9 @@ end = struct
 
     type t
 
-    val is_root : t -> bool
-
-    val create_root : unit -> t
-
     val label : t -> X.t array
 
-    module Queue : sig
+    module Root : sig
 
       type node = t
 
@@ -48,26 +48,39 @@ end = struct
 
       val create : unit -> t
 
-      (* Iterator that can safely squash the current leaf *)
-      val iter : t -> (node -> unit) -> unit
+      val node : t -> node
+
+      val is_node : t -> node -> bool
+
+    end
+
+    module Queue : sig
+
+      type t
+
+      type data
+
+      val create : unit -> t
+
+      (* Iterator that can safely squash the current handle *)
+      val iter : t -> (depth:int -> data -> unit) -> unit
 
     end
 
     val add_leaf :
-      t -> queue:Queue.t -> array:X.t array -> index:int -> t
+      root:Root.t -> parent:t -> array:X.t array -> index:int -> t
 
-    val add_suffix_leaf :
-      t -> array:X.t array -> index:int -> t
+    val split_edge :
+      root:Root.t -> parent:t -> child:t -> len:int -> t
 
-    val split_edge : parent:t -> child:t -> len:int -> t
+    val set_suffix : root:Root.t -> t -> suffix:t -> unit
 
-    val set_suffix : t -> suffix:t -> unit
+    val add_to_count :
+      root:Root.t -> queue:Queue.t -> t -> depth:int -> count:int -> unit
 
-    val add_count : t -> int -> unit
+    val find_child : root:Root.t -> t -> X.t -> t option
 
-    val find_child : t -> X.t -> t option
-
-    val get_child : t -> X.t -> t
+    val get_child : root:Root.t -> t -> X.t -> t
 
     val edge_array : t -> X.t array
 
@@ -85,15 +98,18 @@ end = struct
 
     val parent : t -> t
 
-    val maybe_squash_leaf : queue:Queue.t -> threshold:int -> t -> unit
+    val maybe_squash_data :
+      root:Root.t -> queue:Queue.t ->
+      threshold:int -> depth:int -> Queue.data -> unit
 
     val reset_descendents_count : t -> unit
 
-    val update_parents_descendents_counts : threshold:int -> t -> unit
+    val update_parents_descendents_counts :
+      root:Root.t -> threshold:int -> t -> unit
 
-    val iter_children : (t -> unit) -> t -> unit
+    val iter_children : root:Root.t -> (t -> unit) -> t -> unit
 
-    val fold_children : (t -> 'a -> 'a) -> t -> 'a -> 'a
+    val fold_children : root:Root.t -> (t -> 'a -> 'a) -> t -> 'a -> 'a
 
     val is_heavy : threshold:int -> t -> bool
 
@@ -109,34 +125,30 @@ end = struct
         mutable parent : t;
         mutable suffix_link : t;
         mutable next_sibling : t;
-        mutable kind : kind;
-        mutable count : int;
-        mutable delta : int;
-        mutable max_child_delta : int; }
+        mutable first_child : t;
+        mutable refcount : int;
+        (* [2 * incoming suffix links + 2 * has count + chidren]
+           A node should be deleted when this is <= 1 *)
+        mutable data : data;
+        mutable output : output;
+        mutable max_edge_squashed : int;
+        mutable max_child_squashed : int; }
 
-    and kind =
-      | Dummy
-      | Front_sentinal of { mutable next : t }
-      | Back_sentinal of { mutable previous : t }
-      | Root of { children : t Tbl.t; }
-      | Branch of
-          { mutable first_child : t;
-            mutable incoming : int;
-            mutable descendents_count : int;
+    and data =
+      | No_data
+      | Front_sentinel of { mutable next : data }
+      | Back_sentinel
+      | Data of
+          { parent : t;
+            mutable count: int;
+            mutable next : data;
+            mutable previous: data; }
+
+    and output =
+      | No_output
+      | Output of
+          { mutable descendents_count : int;
             mutable heavy_descendents_count : int; }
-      | Leaf of { mutable next : t; mutable previous: t; }
-      | Suffix_leaf of
-          { mutable incoming : int;
-            mutable descendents_count : int;
-            mutable heavy_descendents_count : int; }
-
-    type queue =
-      { front : t } [@@unboxed]
-
-    let is_root t =
-      match t.kind with
-      | Root _ -> true
-      | _ -> false
 
     let same t1 t2 = t1 == t2
 
@@ -147,16 +159,21 @@ end = struct
       let edge_start = 0 in
       let edge_len = 0 in
       let edge_key = X.dummy in
-      let kind = Dummy in
-      let count = 0 in
-      let delta = 0 in
-      let max_child_delta = 0 in
+      let refcount = 0 in
+      let data = No_data in
+      let output = No_output in
+      let max_child_squashed = 0 in
+      let max_edge_squashed = 0 in
       let rec t =
         { edge_array; edge_start; edge_len; edge_key;
           parent = t; suffix_link = t; next_sibling = t;
-          kind; count; delta; max_child_delta; }
+          first_child = t; refcount; output;
+          data; max_edge_squashed; max_child_squashed; }
       in
       t
+
+    let is_dummy t = same t dummy
+    let is_real t = not (is_dummy t)
 
     let label t =
       let rec loop acc t =
@@ -166,46 +183,44 @@ end = struct
       in
       loop [] t
 
-    let create_root () =
-      let edge_array = dummy_array in
-      let edge_start = 0 in
-      let edge_len = 0 in
-      let edge_key = X.dummy in
-      let children = Tbl.create 37 in
-      let next_sibling = dummy in
-      let kind = Root { children } in
-      let count = 0 in
-      let delta = 0 in
-      let max_child_delta = 0 in
-      let rec node =
-        { edge_array; edge_start; edge_len; edge_key;
-          parent = node; suffix_link = node; next_sibling; kind;
-          count; delta; max_child_delta }
-      in
-      node
+    module Root = struct
 
-    let next t =
-      match t.kind with
-      | Dummy | Back_sentinal _ | Suffix_leaf _
-      | Root _ | Branch _ ->
-          assert false
-      | Front_sentinal { next; _ } | Leaf { next; _ } -> next
+      type node = t
 
-    let set_next t ~next =
-      match t.kind with
-      | Dummy | Back_sentinal _ | Suffix_leaf _
-      | Root _ | Branch _ ->
-          assert false
-      | Front_sentinal k -> k.next <- next
-      | Leaf k -> k.next <- next
+      type t =
+        { node : node;
+          children : node Tbl.t; }
 
-    let set_previous t ~previous =
-      match t.kind with
-      | Dummy | Front_sentinal _ | Suffix_leaf _
-      | Root _ | Branch _ ->
-          assert false
-      | Back_sentinal k -> k.previous <- previous
-      | Leaf k -> k.previous <- previous
+      let create () =
+        let edge_array = dummy_array in
+        let edge_start = 0 in
+        let edge_len = 0 in
+        let edge_key = X.dummy in
+        let next_sibling = dummy in
+        let first_child = dummy in
+        let refcount = 0 in
+        let data = No_data in
+        let output = No_output in
+        let max_child_squashed = 0 in
+        let max_edge_squashed = 0 in
+        let rec node =
+          { edge_array; edge_start; edge_len; edge_key;
+            parent = node; suffix_link = node; next_sibling;
+            first_child; refcount; output;
+            data; max_edge_squashed; max_child_squashed }
+        in
+        let children = Tbl.create 37 in
+        { node; children }
+
+      let node t = t.node
+
+      let is_node t node =
+        same t.node node
+
+      let children t =
+        t.children
+
+    end
 
     let rec set_child_in_list previous current old_child new_child =
       let next = current.next_sibling in
@@ -216,194 +231,90 @@ end = struct
         set_child_in_list current next old_child new_child
       end
 
-    let set_child ~parent ~key ~old_child ~new_child =
-      match parent.kind with
-      | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
-      | Leaf _ | Suffix_leaf _ ->
-          failwith "set_child: No such child"
-      | Root { children } ->
-          Tbl.replace children key new_child
-      | Branch ({ first_child; _ } as k) ->
-          let second_child = first_child.next_sibling in
-          if same first_child old_child then begin
-            k.first_child <- new_child;
-            new_child.next_sibling <- second_child
-          end else begin
-            set_child_in_list first_child second_child old_child new_child
-          end
-
-    let add_child ~parent ~key ~child =
-      match parent.kind with
-      | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
-      | Leaf { next; previous } ->
-          set_previous next ~previous;
-          set_next previous ~next;
-          let incoming = 1 in
-          let first_child = child in
-          let descendents_count = 0 in
-          let heavy_descendents_count = 0 in
-          let new_kind =
-            Branch
-              { first_child; incoming;
-                descendents_count; heavy_descendents_count }
-          in
-          parent.kind <- new_kind
-      | Suffix_leaf { incoming; descendents_count; heavy_descendents_count } ->
-          let incoming = incoming + 1 in
-          let first_child = child in
-          let new_kind =
-            Branch
-              { first_child; incoming;
-                descendents_count; heavy_descendents_count }
-          in
-          parent.kind <- new_kind
-      | Root { children } ->
-          Tbl.add children key child
-      | Branch ({ first_child; incoming; _ } as k) ->
-          child.next_sibling <- first_child;
-          k.first_child <- child;
-          k.incoming <- incoming + 1
-
-    let convert_to_leaf ~queue t =
-      let previous = queue.front in
-      let next = next queue.front in
-      let new_kind = Leaf { next; previous } in
-      t.kind <- new_kind;
-      set_previous next ~previous:t;
-      set_next previous ~next:t
-
-    let rec remove_from_child_list previous current char =
-      let next = current.next_sibling in
-      if X.equal current.edge_key char then begin
-        previous.next_sibling <- next;
+    let set_child ~root ~parent ~key ~old_child ~new_child =
+      if Root.is_node root parent then begin
+        Tbl.replace (Root.children root) key new_child
       end else begin
-        remove_from_child_list current next char
+        let first_child = parent.first_child in
+        let second_child = first_child.next_sibling in
+        if same first_child old_child then begin
+          parent.first_child <- new_child;
+          new_child.next_sibling <- second_child
+        end else begin
+          set_child_in_list first_child second_child old_child new_child
+        end
       end
 
-    let remove_child ~parent ~child =
-      let key = child.edge_key in
-      match parent.kind with
-      | Dummy | Front_sentinal _ | Back_sentinal _ | Leaf _ | Suffix_leaf _ ->
-          assert false
-      | Root { children } ->
-          Tbl.remove children key; false
-      | Branch ({ first_child; incoming; _ } as k) ->
-          let second_child = first_child.next_sibling in
-          if X.equal first_child.edge_key key then begin
-            k.first_child <- second_child
-          end else begin
-            remove_from_child_list first_child second_child key
-          end;
-          let incoming = incoming - 1 in
-          if incoming = 0 then true
-          else begin
-            if same first_child dummy then begin
-              let descendents_count = k.descendents_count in
-              let heavy_descendents_count = k.heavy_descendents_count in
-              let new_kind =
-                Suffix_leaf
-                  { incoming;
-                    descendents_count; heavy_descendents_count; }
-              in
-              parent.kind <- new_kind
-            end else begin
-              k.incoming <- incoming;
-            end;
-            false
-          end
+    let add_child ~root ~parent ~key ~child =
+      if Root.is_node root parent then begin
+        Tbl.add (Root.children root) key child
+      end else begin
+        let first_child = parent.first_child in
+        child.next_sibling <- first_child;
+        parent.first_child <- child;
+        parent.refcount <- parent.refcount + 1
+      end
 
-    let set_suffix t ~suffix =
+    let rec remove_from_child_list previous current child =
+      let next = current.next_sibling in
+      if same current child then begin
+        previous.next_sibling <- next;
+      end else begin
+        remove_from_child_list current next child;
+      end
+
+    let remove_child ~root ~parent ~child =
+      if Root.is_node root parent then begin
+        let key = child.edge_key in
+        Tbl.remove (Root.children root) key
+      end else begin
+        let first_child = parent.first_child in
+        let second_child = first_child.next_sibling in
+        let refcount = parent.refcount - 1 in
+        parent.refcount <- refcount;
+        if same first_child child then begin
+          parent.first_child <- second_child
+        end else begin
+          remove_from_child_list first_child second_child child
+        end
+      end
+
+    let set_suffix ~root t ~suffix =
       t.suffix_link <- suffix;
-      let max_delta = suffix.max_child_delta in
-      t.delta <- max_delta;
-      t.max_child_delta <- max_delta;
-      match suffix.kind with
-      | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
-      | Root _ -> ()
-      | Branch k ->
-          k.incoming <- k.incoming + 1
-      | Suffix_leaf k ->
-          k.incoming <- k.incoming + 1
-      | Leaf { next; previous } ->
-          set_previous next ~previous;
-          set_next previous ~next;
-          let incoming = 1 in
-          let descendents_count = 0 in
-          let heavy_descendents_count = 0 in
-          let new_kind =
-            Suffix_leaf
-              { incoming; descendents_count; heavy_descendents_count; }
-          in
-          suffix.kind <- new_kind
+      if not (Root.is_node root suffix) then
+        suffix.refcount <- suffix.refcount + 2
 
-    let remove_incoming t =
-      match t.kind with
-      | Dummy | Front_sentinal _ | Back_sentinal _ | Leaf _ ->
-          assert false
-      | Root _ -> false
-      | Suffix_leaf ({ incoming; _ } as k) ->
-          let incoming = incoming - 1 in
-          if incoming = 0 then true
-          else begin
-            k.incoming <- incoming;
-            false
-          end
-      | Branch ({ incoming; _ } as k) ->
-          let incoming = incoming - 1 in
-          k.incoming <- incoming;
-          false
+    let remove_incoming ~root t =
+      if Root.is_node root t then max_int
+      else begin
+        let refcount = t.refcount - 2 in
+        t.refcount <- refcount;
+        refcount
+      end
 
-    let add_leaf t ~queue ~array ~index =
+    let add_leaf ~root ~parent ~array ~index =
       let edge_array = array in
       let edge_start = index in
       let edge_len = (Array.length array) - index in
       let edge_key = edge_array.(edge_start) in
-      let parent = t in
       let suffix_link = dummy in
       let next_sibling = dummy in
-      let next = next queue.front in
-      let previous = queue.front in
-      let kind = Leaf { next; previous } in
-      let count = 0 in
-      let max_child_delta = 0 in
-      let delta = 0 in
+      let first_child = dummy in
+      let data = No_data in
+      let output = No_output in
+      let refcount = 0 in
+      let max_edge_squashed = parent.max_child_squashed in
+      let max_child_squashed = parent.max_child_squashed in
       let node =
         { edge_array; edge_start; edge_len; edge_key;
           parent; suffix_link; next_sibling;
-          kind; count; delta; max_child_delta; }
+          first_child; refcount; output;
+          data; max_edge_squashed; max_child_squashed; }
       in
-      set_previous next ~previous:node;
-      set_next previous ~next:node;
-      add_child ~parent:t ~key:edge_key ~child:node;
+      add_child ~root ~parent ~key:edge_key ~child:node;
       node
 
-    let add_suffix_leaf t ~array ~index =
-      let edge_array = array in
-      let edge_start = index in
-      let edge_len = (Array.length array) - index in
-      let edge_key = edge_array.(edge_start) in
-      let parent = t in
-      let suffix_link = dummy in
-      let next_sibling = dummy in
-      let incoming = 0 in
-      let descendents_count = 0 in
-      let heavy_descendents_count = 0 in
-      let kind =
-        Suffix_leaf
-          { incoming; descendents_count; heavy_descendents_count; }
-      in
-      let count = 0 in
-      let max_child_delta = 0 in
-      let delta = 0 in
-      let node =
-        { edge_array; edge_start; edge_len; edge_key;
-          parent; suffix_link; next_sibling; kind;
-          count; delta; max_child_delta; }
-      in
-      add_child ~parent:t ~key:edge_key ~child:node;
-      node
-
-    let split_edge ~parent ~child ~len =
+    let split_edge ~root ~parent ~child ~len =
       if (len = 0) then parent
       else begin
         let edge_array = child.edge_array in
@@ -414,23 +325,18 @@ end = struct
           let edge_len = len in
           let suffix_link = dummy in
           let next_sibling = dummy in
-          let incoming = 1 in
+          let refcount = 1 in
           let first_child = child in
-          let descendents_count = 0 in
-          let heavy_descendents_count = 0 in
-          let kind =
-            Branch
-              { first_child; incoming;
-                descendents_count; heavy_descendents_count }
-          in
-          let count = 0 in
-          let max_child_delta = 0 in
-          let delta = 0 in
+          let data = No_data in
+          let output = No_output in
+          let max_edge_squashed = child.max_edge_squashed in
+          let max_child_squashed = child.max_edge_squashed in
           { edge_array; edge_start; edge_len; edge_key;
-            parent; suffix_link; next_sibling; kind;
-            count; delta; max_child_delta}
+            parent; suffix_link; next_sibling;
+            first_child; refcount; output;
+            data; max_edge_squashed; max_child_squashed}
         in
-        set_child ~parent ~key:edge_key ~old_child:child ~new_child:new_node;
+        set_child ~root ~parent ~key:edge_key ~old_child:child ~new_child:new_node;
         child.edge_start <- edge_start + len;
         child.edge_len <- child.edge_len - len;
         child.edge_key <- child_key;
@@ -439,41 +345,58 @@ end = struct
         new_node
       end
 
-    let add_count t count =
-      t.count <- t.count + count
-
-    let add_child_delta t delta =
-      if delta > t.max_child_delta then begin
-        t.max_child_delta <- delta
-      end
+    let merge_child ~root ~parent t =
+      let child = t.first_child in
+      let edge_key = t.edge_key in
+      let edge_len = t.edge_len in
+      let child_edge_start = child.edge_start in
+      child.edge_key <- edge_key;
+      if child_edge_start >= edge_len then begin
+        child.edge_start <- child_edge_start - edge_len;
+      end else begin
+        let edge_array = t.edge_array in
+        let edge_start = t.edge_start in
+        let common_prefix = edge_start + (edge_len - child_edge_start) in
+        let common =
+          if Array.length edge_array = common_prefix then edge_array
+          else Array.sub edge_array 0 common_prefix
+        in
+        let array = Array.append common child.edge_array in
+        child.edge_array <- array;
+        child.edge_start <- t.edge_start;
+      end;
+      child.edge_len <- edge_len + child.edge_len;
+      let max_edge_squashed = t.max_edge_squashed in
+      let child_max_edge_squashed = child.max_edge_squashed in
+      if max_edge_squashed > child_max_edge_squashed then
+        child.max_edge_squashed <- max_edge_squashed;
+      child.parent <- parent;
+      set_child ~root ~parent ~key:edge_key ~old_child:t ~new_child:child
 
     let rec find_child_in_list current char =
-      if current == dummy then None
+      if is_dummy current then None
       else if X.equal current.edge_key char then Some current
       else find_child_in_list current.next_sibling char
 
-    let find_child t char =
-      match t.kind with
-      | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
-      | Leaf _ | Suffix_leaf _ -> None
-      | Branch { first_child; _ } ->
-          find_child_in_list first_child char
-      | Root { children; _ } ->
-          Tbl.find_opt children char
+    let find_child ~root t char =
+      if Root.is_node root t then begin
+        Tbl.find_opt (Root.children root) char
+      end else begin
+        find_child_in_list t.first_child char
+      end
 
     let rec get_child_in_list current char =
       if X.equal current.edge_key char then current
       else get_child_in_list current.next_sibling char
 
-    let get_child t char =
-      match t.kind with
-      | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
-      | Leaf _ | Suffix_leaf _ -> failwith "get_child: No children"
-      | Branch { first_child; _ } -> get_child_in_list first_child char
-      | Root { children; _ } ->
-          match Tbl.find children char with
-          | child -> child
-          | exception Not_found -> failwith "get_child: No such child"
+    let get_child ~root t char =
+      if Root.is_node root t then begin
+        match Tbl.find (Root.children root) char with
+        | child -> child
+        | exception Not_found -> failwith "get_child: No such child"
+      end else begin
+        get_child_in_list t.first_child char
+      end
 
     let edge_array t = t.edge_array
 
@@ -487,79 +410,78 @@ end = struct
       if i = 0 then t.edge_key
       else t.edge_array.(t.edge_start + i)
 
-    let has_suffix t = not (same t.suffix_link dummy)
+    let has_suffix t = is_real t.suffix_link
 
     let suffix t = t.suffix_link
 
     let parent t = t.parent
 
+    let count t =
+      match t.data with
+      | Back_sentinel | Front_sentinel _ -> assert false
+      | No_data -> 0
+      | Data { count; _ } -> count
+
     let reset_descendents_count t =
-      match t.kind with
-      | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
-      | Leaf _ | Root _ -> ()
-      | Suffix_leaf k ->
-        k.descendents_count <- 0;
-        k.heavy_descendents_count <- 0
-      | Branch k ->
-        k.descendents_count <- 0;
-        k.heavy_descendents_count <- 0
+      t.output <- No_output
 
     let add_to_descendents_count t diff =
-      match t.kind with
-      | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
-      | Leaf _ -> assert false
-      | Suffix_leaf k -> k.descendents_count <- k.descendents_count + diff
-      | Branch k -> k.descendents_count <- k.descendents_count + diff
-      | Root _ -> ()
+      match t.output with
+      | No_output ->
+          let descendents_count = diff in
+          let heavy_descendents_count = 0 in
+          let output =
+            Output { descendents_count; heavy_descendents_count }
+          in
+          t.output <- output
+      | Output o ->
+          o.descendents_count <- o.descendents_count + diff
 
     let add_to_heavy_descendents_count t diff =
-      match t.kind with
-      | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
-      | Leaf _ -> assert false
-      | Suffix_leaf k ->
-          k.heavy_descendents_count <- k.heavy_descendents_count + diff
-      | Branch k -> k.heavy_descendents_count <- k.heavy_descendents_count + diff
-      | Root _ -> ()
+      match t.output with
+      | No_output ->
+          let descendents_count = 0 in
+          let heavy_descendents_count = diff in
+          let output =
+            Output { descendents_count; heavy_descendents_count }
+          in
+          t.output <- output
+      | Output o ->
+          o.heavy_descendents_count <- o.heavy_descendents_count + diff
 
     let descendents_count t =
-      match t.kind with
-      | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
-      | Leaf _ -> 0
-      | Suffix_leaf { descendents_count; _ }
-      | Branch { descendents_count; _ } -> descendents_count
-      | Root _ -> assert false
+      match t.output with
+      | No_output -> 0
+      | Output { descendents_count; _ } -> descendents_count
 
     let heavy_descendents_count t =
-      match t.kind with
-      | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
-      | Leaf _ -> 0
-      | Suffix_leaf { heavy_descendents_count; _ }
-      | Branch { heavy_descendents_count; _ } -> heavy_descendents_count
-      | Root _ -> assert false
+      match t.output with
+      | No_output -> 0
+      | Output { heavy_descendents_count; _ } -> heavy_descendents_count
 
-    let update_parents_descendents_counts ~threshold t =
-      if is_root t then ()
-      else begin
+    let update_parents_descendents_counts ~root ~threshold t =
+      if not (Root.is_node root t) then begin
         let heavy_descendents_count = heavy_descendents_count t in
         let descendents_count = descendents_count t in
-        let total = t.count + descendents_count in
+        let total = count t + descendents_count in
         let light_total = total - heavy_descendents_count in
+        let delta = t.max_edge_squashed in
         let heavy_total =
-          if light_total + t.delta > threshold then total
+          if light_total + delta > threshold then total
           else heavy_descendents_count
         in
         let parent = t.parent in
         let suffix = t.suffix_link in
         let grand_parent = t.parent.suffix_link in
-        if not (same parent dummy) then begin
+        if is_real parent then begin
           add_to_descendents_count parent total;
           add_to_heavy_descendents_count parent heavy_total
         end;
-        if not (same suffix dummy) then begin
+        if is_real suffix then begin
           add_to_descendents_count suffix total;
           add_to_heavy_descendents_count suffix heavy_total
         end;
-        if not (same grand_parent dummy) then begin
+        if is_real grand_parent then begin
           add_to_descendents_count grand_parent (-total);
           add_to_heavy_descendents_count grand_parent (-heavy_total)
         end
@@ -568,16 +490,18 @@ end = struct
     let is_heavy ~threshold t =
       let heavy_descendents_count = heavy_descendents_count t in
       let descendents_count = descendents_count t in
-      let total = t.count + descendents_count in
+      let total = count t + descendents_count in
       let light_total = total - heavy_descendents_count in
-      light_total + t.delta > threshold
+      let delta = t.max_edge_squashed in
+      light_total + delta > threshold
 
     let output t =
       let heavy_descendents_count = heavy_descendents_count t in
       let descendents_count = descendents_count t in
-      let total = t.count + descendents_count in
+      let total = count t + descendents_count in
       let light_total = total - heavy_descendents_count in
-      (label t, light_total, total, total + t.delta)
+      let delta = t.max_edge_squashed in
+      (label t, light_total, total, total + delta)
 
     let iter_over_child_list f current =
       let current = ref current in
@@ -587,14 +511,12 @@ end = struct
         current := child.next_sibling
       done
 
-    let iter_children f t =
-      match t.kind with
-      | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
-      | Leaf _ | Suffix_leaf _ -> ()
-      | Branch { first_child; _ } ->
-          iter_over_child_list f first_child
-      | Root { children; _ } ->
-          Tbl.iter (fun _ n -> f n) children
+    let iter_children ~root f t =
+      if Root.is_node root t then begin
+        Tbl.iter (fun _ n -> f n) (Root.children root)
+      end else begin
+        iter_over_child_list f t.first_child
+      end
 
     let fold_over_child_list f current acc =
       let acc = ref acc in
@@ -606,98 +528,168 @@ end = struct
       done;
       !acc
 
-    let fold_children f t acc =
-      match t.kind with
-      | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
-      | Leaf _ | Suffix_leaf _ -> acc
-      | Branch { first_child; _ } ->
-          fold_over_child_list f first_child acc
-      | Root { children; _ } ->
-          Tbl.fold (fun _ n -> f n) children acc
-
-    let rec squash_detached ~queue ~threshold t =
-      let parent = t.parent in
-      let suffix = t.suffix_link in
-      let count = t.count in
-      let delta = t.delta in
-      let grand_parent = t.parent.suffix_link in
-      add_count parent count;
-      add_count grand_parent (-count);
-      if (remove_child ~parent ~child:t) then begin
-        let upper_bound = parent.count + parent.delta in
-        if upper_bound < threshold then squash_detached ~queue ~threshold parent
-        else convert_to_leaf ~queue parent
-      end;
-      add_count suffix count;
-      add_child_delta suffix (count + delta);
-      if (remove_incoming suffix) then begin
-        let upper_bound = suffix.count + suffix.delta in
-        if upper_bound < threshold then squash_detached ~queue ~threshold suffix
-        else convert_to_leaf ~queue suffix
+    let fold_children ~root f t acc =
+      if Root.is_node root t then begin
+        Tbl.fold (fun _ n -> f n) (Root.children root) acc
+      end else begin
+        fold_over_child_list f t.first_child acc
       end
 
-    let maybe_squash_leaf ~queue ~threshold t =
-      let upper_bound = t.count + t.delta in
-      if upper_bound < threshold then begin
-        match t.kind with
-        | Dummy | Front_sentinal _ | Back_sentinal _ -> assert false
-        | Root _ | Branch _ | Suffix_leaf _ -> failwith "squash: Not a leaf"
-        | Leaf ({ previous; next } as k) ->
-            set_previous next ~previous;
-            set_next previous ~next;
-            k.next <- dummy;
-            k.previous <- dummy;
-            squash_detached ~queue ~threshold t
-      end
+    let next data =
+      match data with
+      | No_data | Back_sentinel -> assert false
+      | Front_sentinel { next; _ }
+      | Data { next; _ } -> next
+
+    let set_next data ~next =
+      match data with
+      | No_data | Back_sentinel -> assert false
+      | Front_sentinel k -> k.next <- next
+      | Data k -> k.next <- next
+
+    let set_previous data ~previous =
+      match data with
+      | No_data | Front_sentinel _ -> assert false
+      | Back_sentinel -> ()
+      | Data k -> k.previous <- previous
+
+      let is_back_sentinal data =
+        match data with
+        | Back_sentinel -> true
+        | _ -> false
 
     module Queue = struct
 
-      type node = t
+      type nonrec data = data
 
-      type t = queue
+      type t =
+        { mutable fronts : data Array.t;
+          mutable max : int; }
 
       let create () =
-        let edge_array = dummy_array in
-        let edge_start = 0 in
-        let edge_len = 0 in
-        let edge_key = X.dummy in
-        let count = 0 in
-        let delta = 0 in
-        let max_child_delta = 0 in
-        let parent = dummy in
-        let suffix_link = dummy in
-        let next_sibling = dummy in
-        let front =
-          let next = dummy in
-          let kind = Front_sentinal { next; } in
-          { edge_array; edge_start; edge_len; edge_key;
-            parent; suffix_link; next_sibling; kind;
-            count; delta; max_child_delta; }
-        in
-        let back =
-          let previous = front in
-          let kind = Back_sentinal { previous; } in
-          { edge_array; edge_start; edge_len; edge_key;
-            parent; suffix_link; next_sibling; kind;
-            count; delta; max_child_delta; }
-        in
-        set_next front ~next:back;
-        { front }
+        let fronts = [| |] in
+        let max = -1 in
+        { fronts; max }
 
-      let is_back_sentinal t =
-        match t.kind with
-        | Back_sentinal _ -> true
-        | _ -> false
+      let enlarge t =
+        let fronts = t.fronts in
+        let old_length = Array.length fronts in
+        let new_length = (old_length * 2) + 1 in
+        let new_fronts = Array.make new_length Back_sentinel in
+        Array.blit fronts 0 new_fronts 0 old_length;
+        t.fronts <- new_fronts
 
-      let iter t f =
-        let current = ref (next t.front) in
+      let add t ~depth ~parent ~count =
+        if depth > t.max then begin
+          while depth >= Array.length t.fronts do
+            enlarge t
+          done;
+          for i = t.max + 1 to depth do
+            let empty = Front_sentinel { next = Back_sentinel } in
+            t.fronts.(i) <- empty
+          done;
+          t.max <- depth
+        end;
+        let previous = t.fronts.(depth) in
+        let next = next previous in
+        let data =
+          Data { parent; count; previous; next }
+        in
+        set_previous next ~previous:data;
+        set_next previous ~next:data;
+        data
+
+      let iter_front front depth f =
+        let current = ref (next front) in
         while not (is_back_sentinal !current) do
           let next_current = next !current in
-          f !current;
+          f ~depth !current;
           current := next_current
         done
 
+      let iter t f =
+        let fronts = t.fronts in
+        for i = t.max downto 0 do
+          iter_front fronts.(i) i f
+        done
+
     end
+
+    let add_to_count ~root ~queue t ~depth ~count =
+      if not (Root.is_node root t) then begin
+        match t.data with
+        | Back_sentinel | Front_sentinel _ -> assert false
+        | No_data ->
+            let parent = t in
+            let data = Queue.add queue ~depth ~parent ~count in
+            t.data <- data;
+            t.refcount <- t.refcount + 2
+        | Data c -> c.count <- c.count + count
+      end
+
+    let add_squashed_child t ~upper_bound =
+      if upper_bound > t.max_child_squashed then begin
+        t.max_child_squashed <- upper_bound
+      end
+
+    let add_squashed_edge t ~upper_bound =
+      if upper_bound > t.max_edge_squashed then begin
+        t.max_edge_squashed <- upper_bound
+      end
+
+    let rec squash ~root ~queue ~threshold
+              ~depth ~count ~upper_bound ~refcount t =
+      let parent = t.parent in
+      let suffix = t.suffix_link in
+      let grand_parent = t.parent.suffix_link in
+      add_squashed_edge t ~upper_bound;
+      add_squashed_child parent ~upper_bound;
+      let parent_depth = depth - t.edge_len in
+      let grand_parent_depth = parent_depth - 1 in
+      let suffix_depth = depth - 1 in
+      let grand_parent_count = 0 - count in
+      add_to_count ~root ~queue grand_parent
+        ~depth:grand_parent_depth ~count:grand_parent_count;
+      add_to_count ~root ~queue parent ~depth:parent_depth ~count;
+      if refcount = 0 then begin
+        remove_child ~root ~parent ~child:t;
+        let refcount = remove_incoming ~root suffix in
+        if refcount = 0 then begin
+          let delta = suffix.max_edge_squashed in
+          let upper_bound = count + delta in
+          if upper_bound < threshold then begin
+            squash ~root ~queue ~threshold ~depth:suffix_depth
+              ~count ~upper_bound ~refcount suffix
+          end else begin
+            add_to_count ~root ~queue suffix ~depth:suffix_depth ~count
+          end
+        end else begin
+          add_to_count ~root ~queue suffix ~depth:suffix_depth ~count
+        end
+      end else begin
+        add_to_count ~root ~queue suffix ~depth:suffix_depth ~count;
+        if refcount = 1 then begin
+          merge_child ~root ~parent t;
+          ignore (remove_incoming ~root suffix)
+        end
+      end
+
+    let maybe_squash_data ~root ~queue ~threshold ~depth data =
+      match data with
+      | No_data | Back_sentinel | Front_sentinel _ ->
+        assert false
+      | Data { parent; count; next; previous } ->
+          let delta = parent.max_edge_squashed in
+          let upper_bound = count + delta in
+          if upper_bound < threshold then begin
+            set_previous next ~previous;
+            set_next previous ~next;
+            parent.data <- No_data;
+            let refcount = parent.refcount - 2 in
+            parent.refcount <- refcount;
+            squash ~root ~queue ~threshold ~depth
+              ~count ~upper_bound ~refcount parent
+          end
 
   end
 
@@ -711,11 +703,11 @@ end = struct
 
     val retract : t -> distance:int -> unit
 
-    val scan : t -> array:X.t array -> index:int -> bool
+    val scan : root:Node.Root.t -> t -> array:X.t array -> index:int -> bool
 
-    val split_at : t -> Node.t
+    val split_at : root:Node.Root.t -> t -> Node.t
 
-    val goto_suffix : t -> Node.t -> unit
+    val goto_suffix : root:Node.Root.t -> t -> Node.t -> unit
 
   end = struct
 
@@ -777,11 +769,11 @@ end = struct
         n
       end
 
-    let scan t ~array ~index =
+    let scan ~root t ~array ~index =
       let char = array.(index) in
       let len = t.len in
       if len = 0 then begin
-        match Node.find_child t.parent char with
+        match Node.find_child ~root t.parent char with
         | None -> false
         | Some child ->
             t.child <- child;
@@ -797,38 +789,37 @@ end = struct
         end
       end
 
-    let split_at t =
+    let split_at ~root t =
       let len = t.len in
       if len = 0 then t.parent
       else begin
-        let node = Node.split_edge ~parent:t.parent ~child:t.child ~len in
+        let node = Node.split_edge ~root ~parent:t.parent ~child:t.child ~len in
         goto t node;
         node
       end
 
-    let rec rescan t ~array ~start ~len =
-      if len = 0 then ()
-      else begin
+    let rec rescan ~root t ~array ~start ~len =
+      if len <> 0 then begin
         if t.len = 0 then begin
           let char = array.(start) in
-          let child = Node.get_child t.parent char in
+          let child = Node.get_child ~root t.parent char in
           t.child <- child
         end;
         let diff = extend_n t len in
         let start = start + diff in
         let len = len - diff in
-        rescan t ~array ~start ~len
+        rescan ~root t ~array ~start ~len
       end
 
-    let rescan1 t ~key =
+    let rescan1 ~root t ~key =
       if t.len = 0 then begin
-        let child = Node.get_child t.parent key in
+        let child = Node.get_child ~root t.parent key in
         t.child <- child
       end;
       extend t
 
-    let rec goto_suffix t node =
-      if Node.is_root node then begin
+    let rec goto_suffix ~root t node =
+      if Node.Root.is_node root node then begin
         goto t node
       end else if Node.has_suffix node then begin
         goto t (Node.suffix node)
@@ -836,24 +827,24 @@ end = struct
         let parent = Node.parent node in
         let len = Node.edge_length node in
         if len = 1 then begin
-          if Node.is_root parent then begin
+          if Node.Root.is_node root parent then begin
             goto t parent
           end else begin
             let key = Node.edge_key node in
-            goto_suffix t parent;
-            rescan1 t ~key
+            goto_suffix ~root t parent;
+            rescan1 ~root t ~key
           end
         end else begin
           let array = Node.edge_array node in
           let start = Node.edge_start node in
-          if Node.is_root parent then begin
+          if Node.Root.is_node root parent then begin
             goto t parent;
             let start = start + 1 in
             let len = len - 1 in
-            rescan t ~array ~start ~len
+            rescan ~root t ~array ~start ~len
           end else begin
-            goto_suffix t parent;
-            rescan t ~array ~start ~len
+            goto_suffix ~root t parent;
+            rescan ~root t ~array ~start ~len
           end
         end
       end
@@ -865,7 +856,7 @@ end = struct
     | Compressed of X.t array
 
   type t =
-    { root : Node.t;
+    { root : Node.Root.t;
       leaves : Node.Queue.t;
       mutable max_length : int;
       mutable count : int;
@@ -878,14 +869,14 @@ end = struct
     }
 
   let create ~error =
-    let root = Node.create_root () in
+    let root = Node.Root.create () in
     let leaves = Node.Queue.create () in
     let max_length = 0 in
     let count = 0 in
     let bucket_size = Float.to_int (Float.ceil (1.0 /. error)) in
     let current_bucket = 0 in
     let remaining_in_current_bucket = bucket_size in
-    let active = Cursor.create ~at:root in
+    let active = Cursor.create ~at:(Node.Root.node root) in
     let previous_length = 0 in
     let state = Uncompressed in
     { root; leaves; max_length; count;
@@ -893,28 +884,41 @@ end = struct
       active; previous_length; state }
 
   let update_descendent_counts ~threshold t =
+    let root = t.root in
     let nodes : Node.t list array = Array.make (t.max_length + 1) [] in
     let rec loop depth node =
       Node.reset_descendents_count node;
       let depth = depth + Node.edge_length node in
       nodes.(depth) <- node :: nodes.(depth);
-      Node.iter_children (loop depth) node
+      Node.iter_children ~root (loop depth) node
     in
-    loop 0 t.root;
+    loop 0 (Node.Root.node root);
     for i = t.max_length downto 0 do
-      List.iter (Node.update_parents_descendents_counts ~threshold) nodes.(i)
+      List.iter
+        (Node.update_parents_descendents_counts ~root ~threshold)
+        nodes.(i)
     done
 
   let compress t =
+    let root = t.root in
     let queue = t.leaves in
     let threshold = t.current_bucket in
-    Node.Queue.iter queue (Node.maybe_squash_leaf ~queue ~threshold)
+    Node.Queue.iter queue (Node.maybe_squash_data ~root ~queue ~threshold)
+
+  let rec ensure_suffix ~root cursor t =
+    if not (Node.has_suffix t) then begin
+      Cursor.goto_suffix ~root cursor t;
+      let suffix = Cursor.split_at ~root cursor in
+      ensure_suffix ~root cursor suffix;
+      Node.set_suffix ~root t ~suffix
+    end
 
   let insert t ~common_prefix array ~count =
     let len = Array.length array in
     let total_len = common_prefix + len in
     if total_len > t.max_length then t.max_length <- total_len;
     t.count <- t.count + count;
+    let root = t.root in
     let queue = t.leaves in
     let active = t.active in
     let array, len, base =
@@ -927,50 +931,47 @@ end = struct
         let array = Array.append common array in
         array, total_len, 0
     in
-    let rec loop array len base queue active index j is_suffix =
+    let rec loop array len base root queue active index j =
       if index >= len then begin
-        Cursor.split_at active
+        let destination = Cursor.split_at ~root active in
+        ensure_suffix ~root active destination;
+        destination
       end else begin
-        loop_inner array len base queue active index j is_suffix
+        loop_inner array len base root queue active index j
       end
-    and loop_inner array len base queue active index j is_suffix =
+    and loop_inner array len base root queue active index j =
       if j > base + index then begin
-        loop array len base queue active (index + 1) j is_suffix
-      end else if Cursor.scan active ~array ~index then begin
-        loop array len base queue active (index + 1) j is_suffix
+        loop array len base root queue active (index + 1) j
+      end else if Cursor.scan ~root active ~array ~index then begin
+        loop array len base root queue active (index + 1) j
       end else begin
-        let parent = Cursor.split_at active in
-        Cursor.goto_suffix active parent;
-        let leaf =
-          if is_suffix then
-            Node.add_suffix_leaf parent ~array ~index
-          else
-            Node.add_leaf parent ~queue ~array ~index
-        in
+        let parent = Cursor.split_at ~root active in
+        Cursor.goto_suffix ~root active parent;
+        let leaf = Node.add_leaf ~root ~parent ~array ~index in
         let leaf_suffix =
           if Node.has_suffix parent then begin
-            loop_inner array len base queue active index (j + 1) true
+            loop_inner array len base root queue active index (j + 1)
           end else begin
-            let suffix = Cursor.split_at active in
+            let suffix = Cursor.split_at ~root active in
             let leaf_suffix =
-              loop_inner array len base queue active index (j + 1) true
+              loop_inner array len base root queue active index (j + 1)
             in
-            Node.set_suffix parent ~suffix;
+            Node.set_suffix ~root parent ~suffix;
             leaf_suffix
           end
         in
-        Node.set_suffix leaf ~suffix:leaf_suffix;
+        Node.set_suffix ~root leaf ~suffix:leaf_suffix;
         leaf
       end
     in
-    let destination = loop array len base queue active 0 0 false in
-    Node.add_count destination count;
+    let destination = loop array len base root queue active 0 0 in
+    Node.add_to_count ~root ~queue destination ~depth:total_len ~count;
     let remaining = t.remaining_in_current_bucket - 1 in
     if remaining <= 0 then begin
       t.current_bucket <- t.current_bucket + 1;
       t.remaining_in_current_bucket <- t.bucket_size;
       let destination_label = Node.label destination in
-      Cursor.goto active t.root;
+      Cursor.goto active (Node.Root.node t.root);
       compress t;
       t.previous_length <- 0;
       t.state <- Compressed destination_label
@@ -988,15 +989,17 @@ end = struct
     let cmp (_, (light_count1 : int), _, _) (_, (light_count2 : int), _, _) =
       compare light_count2 light_count1
     in
+    let root = t.root in
     update_descendent_counts ~threshold t;
     let rec loop node acc =
-      let acc = Node.fold_children loop node acc in
+      let acc = Node.fold_children ~root loop node acc in
       if Node.is_heavy ~threshold node then
         List.merge cmp [Node.output node] acc
       else
         acc
     in
-    Node.fold_children loop t.root [], t.count
+    let node = Node.Root.node root in
+    Node.fold_children ~root loop node [], t.count
 
 end
 
@@ -1018,6 +1021,12 @@ module Location = struct
 
   let print ppf i =
     Format.fprintf ppf "%x" (i : t :> int)
+
+  let print_array ppf a =
+    for i = 0 to Array.length a - 1 do
+      print ppf a.(i);
+      Format.fprintf ppf "; "
+    done
 
 end
 
