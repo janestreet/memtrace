@@ -14,6 +14,8 @@ module type Char = sig
 
   val dummy : t
 
+  val less_than : t -> t -> bool
+
   val print : Format.formatter -> t -> unit
 
   val print_array : Format.formatter -> t array -> unit
@@ -68,7 +70,8 @@ end = struct
     end
 
     val add_leaf :
-      root:Root.t -> parent:t -> array:X.t array -> index:int -> t
+      root:Root.t -> parent:t -> array:X.t array -> index:int
+      -> key:X.t -> t
 
     val split_edge :
       root:Root.t -> parent:t -> child:t -> len:int -> t
@@ -78,7 +81,12 @@ end = struct
     val add_to_count :
       root:Root.t -> queue:Queue.t -> t -> depth:int -> count:int -> unit
 
-    val find_child : root:Root.t -> t -> X.t -> t option
+    type find_result =
+      | Found of t
+      | Added of t
+
+    val find_or_add_leaf :
+      root:Root.t -> parent:t -> array:X.t array -> index:int -> find_result
 
     val get_child : root:Root.t -> t -> X.t -> t
 
@@ -245,14 +253,30 @@ end = struct
         end
       end
 
+    let rec add_child_to_list ~key ~child previous current =
+      let current_key = current.edge_key in
+      if X.less_than key current_key then begin
+        child.next_sibling <- current;
+        previous.next_sibling <- child
+      end else begin
+        add_child_to_list ~key ~child
+          current current.next_sibling
+      end
+
     let add_child ~root ~parent ~key ~child =
       if Root.is_node root parent then begin
         Tbl.add (Root.children root) key child
       end else begin
+        parent.refcount <- parent.refcount + 1;
         let first_child = parent.first_child in
-        child.next_sibling <- first_child;
-        parent.first_child <- child;
-        parent.refcount <- parent.refcount + 1
+        let first_key = first_child.edge_key in
+        if X.less_than key first_key then begin
+          child.next_sibling <- first_child;
+          parent.first_child <- child;
+        end else begin
+          add_child_to_list ~key ~child
+            first_child first_child.next_sibling
+        end
       end
 
     let rec remove_from_child_list previous current child =
@@ -292,11 +316,11 @@ end = struct
         refcount
       end
 
-    let add_leaf ~root ~parent ~array ~index =
+    let fresh_leaf ~parent ~array ~index ~key =
       let edge_array = array in
       let edge_start = index in
       let edge_len = (Array.length array) - index in
-      let edge_key = edge_array.(edge_start) in
+      let edge_key = key in
       let suffix_link = dummy in
       let next_sibling = dummy in
       let first_child = dummy in
@@ -305,13 +329,14 @@ end = struct
       let refcount = 0 in
       let max_edge_squashed = parent.max_child_squashed in
       let max_child_squashed = parent.max_child_squashed in
-      let node =
-        { edge_array; edge_start; edge_len; edge_key;
-          parent; suffix_link; next_sibling;
-          first_child; refcount; output;
-          data; max_edge_squashed; max_child_squashed; }
-      in
-      add_child ~root ~parent ~key:edge_key ~child:node;
+      { edge_array; edge_start; edge_len; edge_key;
+        parent; suffix_link; next_sibling;
+        first_child; refcount; output;
+        data; max_edge_squashed; max_child_squashed; }
+
+    let add_leaf ~root ~parent ~array ~index ~key =
+      let node = fresh_leaf ~parent ~array ~index ~key in
+      add_child ~root ~parent ~key ~child:node;
       node
 
     let split_edge ~root ~parent ~child ~len =
@@ -347,10 +372,10 @@ end = struct
 
     let merge_child ~root ~parent t =
       let child = t.first_child in
-      let edge_key = t.edge_key in
+      let key = t.edge_key in
       let edge_len = t.edge_len in
       let child_edge_start = child.edge_start in
-      child.edge_key <- edge_key;
+      child.edge_key <- key;
       if child_edge_start >= edge_len then begin
         child.edge_start <- child_edge_start - edge_len;
       end else begin
@@ -371,23 +396,61 @@ end = struct
       if max_edge_squashed > child_max_edge_squashed then
         child.max_edge_squashed <- max_edge_squashed;
       child.parent <- parent;
-      set_child ~root ~parent ~key:edge_key ~old_child:t ~new_child:child
+      set_child ~root ~parent ~key ~old_child:t ~new_child:child
 
-    let rec find_child_in_list current char =
-      if is_dummy current then None
-      else if X.equal current.edge_key char then Some current
-      else find_child_in_list current.next_sibling char
+    type find_result =
+      | Found of t
+      | Added of t
 
-    let find_child ~root t char =
-      if Root.is_node root t then begin
-        Tbl.find_opt (Root.children root) char
+    let rec find_or_add_leaf_in_list ~parent ~array ~index ~key
+              previous current =
+      let current_key = current.edge_key in
+      if X.less_than key current_key then begin
+        let child = fresh_leaf ~parent ~array ~index ~key in
+        child.next_sibling <- current;
+        previous.next_sibling <- child;
+        parent.refcount <- parent.refcount + 1;
+        Added child
+      end else if X.equal key current_key then begin
+        Found current
       end else begin
-        find_child_in_list t.first_child char
+        find_or_add_leaf_in_list ~parent ~array ~index ~key
+          current current.next_sibling
       end
 
-    let rec get_child_in_list current char =
-      if X.equal current.edge_key char then current
-      else get_child_in_list current.next_sibling char
+    let find_or_add_leaf ~root ~parent ~array ~index =
+      let key = array.(index) in
+      if Root.is_node root parent then begin
+        let children = Root.children root in
+        match Tbl.find_opt children key with
+        | Some child -> Found child
+        | None ->
+            let leaf = fresh_leaf ~parent ~array ~index ~key in
+            Tbl.add children key leaf;
+            Added leaf
+      end else begin
+        let first_child = parent.first_child in
+        let first_key = first_child.edge_key in
+        if X.less_than key first_key then begin
+          let leaf = fresh_leaf ~parent ~array ~index ~key in
+          leaf.next_sibling <- first_child;
+          parent.first_child <- leaf;
+          parent.refcount <- parent.refcount + 1;
+          Added leaf
+        end else if X.equal key first_key then begin
+          Found first_child
+        end else begin
+          find_or_add_leaf_in_list
+            ~parent ~array ~index ~key
+            first_child first_child.next_sibling
+        end
+      end
+
+    let rec get_child_in_list current count char =
+      if X.equal current.edge_key char then begin
+        current
+      end
+      else get_child_in_list current.next_sibling (count + 1) char
 
     let get_child ~root t char =
       if Root.is_node root t then begin
@@ -395,7 +458,7 @@ end = struct
         | child -> child
         | exception Not_found -> failwith "get_child: No such child"
       end else begin
-        get_child_in_list t.first_child char
+        get_child_in_list t.first_child 1 char
       end
 
     let edge_array t = t.edge_array
@@ -703,7 +766,12 @@ end = struct
 
     val retract : t -> distance:int -> unit
 
-    val scan : root:Node.Root.t -> t -> array:X.t array -> index:int -> bool
+    type find_result =
+      | Found
+      | Added of { parent : Node.t; leaf : Node.t; }
+
+    val find_or_add_leaf :
+      root:Node.Root.t -> t -> array:X.t array -> index:int -> find_result
 
     val split_at : root:Node.Root.t -> t -> Node.t
 
@@ -769,23 +837,34 @@ end = struct
         n
       end
 
-    let scan ~root t ~array ~index =
-      let char = array.(index) in
+    type find_result =
+      | Found
+      | Added of { parent : Node.t; leaf : Node.t; }
+
+    let find_or_add_leaf ~root t ~array ~index =
       let len = t.len in
+      let parent = t.parent in
       if len = 0 then begin
-        match Node.find_child ~root t.parent char with
-        | None -> false
-        | Some child ->
+        match Node.find_or_add_leaf ~root ~parent ~array ~index with
+        | Found child ->
             t.child <- child;
             extend t;
-            true
+            Found
+        | Added leaf -> Added { parent; leaf }
       end else begin
+        let char = array.(index) in
         let next_char = Node.edge_char t.child len in
         if X.equal char next_char then begin
           extend t;
-          true
+          Found
         end else begin
-          false
+          let child = t.child in
+          let parent = Node.split_edge ~root ~parent ~child ~len in
+          let leaf =
+            Node.add_leaf ~root ~parent ~array ~index ~key:char
+          in
+          goto t parent;
+          Added { parent; leaf }
         end
       end
 
@@ -942,26 +1021,26 @@ end = struct
     and loop_inner array len base root queue active index j =
       if j > base + index then begin
         loop array len base root queue active (index + 1) j
-      end else if Cursor.scan ~root active ~array ~index then begin
-        loop array len base root queue active (index + 1) j
       end else begin
-        let parent = Cursor.split_at ~root active in
-        Cursor.goto_suffix ~root active parent;
-        let leaf = Node.add_leaf ~root ~parent ~array ~index in
-        let leaf_suffix =
-          if Node.has_suffix parent then begin
-            loop_inner array len base root queue active index (j + 1)
-          end else begin
-            let suffix = Cursor.split_at ~root active in
+        match Cursor.find_or_add_leaf ~root active ~array ~index with
+        | Found ->
+            loop array len base root queue active (index + 1) j
+        | Added { parent; leaf } ->
+            Cursor.goto_suffix ~root active parent;
             let leaf_suffix =
-              loop_inner array len base root queue active index (j + 1)
+              if Node.has_suffix parent then begin
+                loop_inner array len base root queue active index (j + 1)
+              end else begin
+                let suffix = Cursor.split_at ~root active in
+                let leaf_suffix =
+                  loop_inner array len base root queue active index (j + 1)
+                in
+                Node.set_suffix ~root parent ~suffix;
+                leaf_suffix
+              end
             in
-            Node.set_suffix ~root parent ~suffix;
-            leaf_suffix
-          end
-        in
-        Node.set_suffix ~root leaf ~suffix:leaf_suffix;
-        leaf
+            Node.set_suffix ~root leaf ~suffix:leaf_suffix;
+            leaf
       end
     in
     let destination = loop array len base root queue active 0 0 in
@@ -1017,7 +1096,9 @@ module Location = struct
   let compare (x : t) (y : t) =
     Int.compare (x :> int) (y :> int)
 
-  let dummy = (Obj.magic (-1L : int64) : t)
+  let dummy = (Obj.magic (max_int : int) : t)
+
+  let less_than (x : t) (y : t) = x < y
 
   let print ppf i =
     Format.fprintf ppf "%x" (i : t :> int)
