@@ -1180,80 +1180,91 @@ module Seen : sig
 
   type t
 
-  val empty : t
+  val create : unit -> t
 
   val mem : t -> Location.t -> bool
 
-  val add : t -> Location.t -> int -> t
+  val add : t -> Location.t -> int -> unit
 
   val size : t -> int
 
-  val pop_until : t -> int -> t
+  val pop_until : t -> int -> unit
 
-end  = struct
+end = struct
 
-  module Loc_set = Set.Make(Location)
+  module Loc_tbl = Hashtbl.Make(Location)
 
-  type t =
+  type log =
     | Nil
     | Cons of
-        { set : Loc_set.t;
+        { loc : Location.t;
           size : int;
           depth : int;
-          previous : t; }
+          previous : log; }
 
-  let empty = Nil
+  type t =
+    { mutable log : log;
+      tbl : unit Loc_tbl.t; }
 
-  let set = function
-    | Nil -> Loc_set.empty
-    | Cons { set; _ } -> set
+  let create () =
+    { log = Nil;
+      tbl = Loc_tbl.create 37; }
 
-  let size = function
+  let size t =
+    match t.log with
     | Nil -> 0
     | Cons { size; _ } -> size
 
-  let mem seen loc =
-    Loc_set.mem loc (set seen)
+  let mem t loc =
+    Loc_tbl.mem t.tbl loc
 
-  let add seen loc depth =
-    match seen with
-    | Nil ->
-        let set = Loc_set.singleton loc in
+  let add t loc depth =
+    let log =
+      match t.log with
+      | Nil ->
         let size = 1 in
-        let previous = seen in
-        Cons { set; size; depth; previous }
-    | Cons { set; size; _ } ->
-        let set = Loc_set.add loc set in
+        let previous = Nil in
+        Cons { loc; size; depth; previous }
+      | Cons { size; _ } as previous ->
         let size = size + 1 in
-        let previous = seen in
-        Cons { set; size; depth; previous }
+        Cons { loc; size; depth; previous }
+    in
+    Loc_tbl.add t.tbl loc ();
+    t.log <- log
 
-  let rec pop_until seen until =
-    match seen with
-    | Nil -> seen
-    | Cons{depth; previous; _ } ->
-        if depth < until then seen
-        else pop_until previous until
+  let rec pop_until tbl log until =
+    match log with
+    | Nil -> log
+    | Cons{ loc; depth; previous; _ } ->
+        if depth < until then log
+        else begin
+          Loc_tbl.remove tbl loc;
+          pop_until tbl previous until
+        end
+
+  let pop_until t until =
+    let log = pop_until t.tbl t.log until in
+    t.log <- log
 
 end
 
 let count ~frequency ~error ~filename =
   let trace = open_trace ~filename in
   let shh = Loc_hitters.create ~error in
-  let seen = ref Seen.empty in
+  let seen = Seen.create () in
   iter_trace trace
     (fun _time ev ->
        match ev with
        | Alloc {obj_id=_; length=_; nsamples; is_major=_;
                 backtrace_buffer; backtrace_length; common_prefix} ->
            let rev_trace = ref [] in
-           seen := Seen.pop_until !seen common_prefix;
-           let common = Seen.size !seen in
+           Seen.pop_until seen common_prefix;
+           let common = Seen.size seen in
            for i = common_prefix to backtrace_length - 1 do
              let loc = backtrace_buffer.(i) in
-             if not (Seen.mem !seen loc) then begin
+             if not (Seen.mem seen loc) then begin
                rev_trace := loc :: !rev_trace;
-               seen := Seen.add !seen loc i
+               Seen.add seen loc i
              end
            done;
            let extension = Array.of_list (List.rev !rev_trace) in
