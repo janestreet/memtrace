@@ -1,10 +1,5 @@
 (* A generalized suffix tree based on Ukkonen's algorithm
-   combined with lossy counting.
-
-   Assumes that individual strings have no duplicate characters,
-   and that characters used at the end of strings are only ever
-   used at the end of strings.
- *)
+   combined with lossy counting. *)
 
 open Memtrace
 
@@ -56,19 +51,6 @@ end = struct
 
     end
 
-    module Queue : sig
-
-      type t
-
-      type data
-
-      val create : unit -> t
-
-      (* Iterator that can safely squash the current handle *)
-      val iter : t -> (depth:int -> data -> unit) -> unit
-
-    end
-
     val add_leaf :
       root:Root.t -> parent:t -> array:X.t array -> index:int
       -> key:X.t -> t
@@ -79,7 +61,7 @@ end = struct
     val set_suffix : root:Root.t -> t -> suffix:t -> unit
 
     val add_to_count :
-      root:Root.t -> queue:Queue.t -> t -> depth:int -> count:int -> unit
+      root:Root.t -> depth:int -> count:int -> t -> unit
 
     type find_result =
       | Found of t
@@ -106,9 +88,7 @@ end = struct
 
     val parent : t -> t
 
-    val maybe_squash_data :
-      root:Root.t -> queue:Queue.t ->
-      threshold:int -> depth:int -> Queue.data -> unit
+    val compress : root:Root.t -> threshold:int -> unit
 
     val reset_descendents_count : t -> unit
 
@@ -137,20 +117,16 @@ end = struct
         mutable refcount : int;
         (* [2 * incoming suffix links + 2 * has count + chidren]
            A node should be deleted when this is <= 1 *)
-        mutable data : data;
+        mutable queue_item : queue_item;
         mutable output : output;
+        mutable count : int;
         mutable max_edge_squashed : int;
         mutable max_child_squashed : int; }
 
-    and data =
-      | No_data
-      | Front_sentinel of { mutable next : data }
-      | Back_sentinel
-      | Data of
-          { parent : t;
-            mutable count: int;
-            mutable next : data;
-            mutable previous: data; }
+    and queue_item =
+      { node : t;
+        mutable next : queue_item;
+        mutable previous: queue_item; }
 
     and output =
       | No_output
@@ -160,28 +136,134 @@ end = struct
 
     let same t1 t2 = t1 == t2
 
+    let is_removable refcount = refcount = 0
+    let is_mergable refcount = refcount = 1
+    let is_mergable_or_removable refcount = refcount <= 1
+
     let dummy_array = [||]
 
-    let dummy =
+    let rec dummy_queue_item =
+      { node = dummy;
+        next = dummy_queue_item;
+        previous = dummy_queue_item; }
+
+    and dummy =
       let edge_array = dummy_array in
       let edge_start = 0 in
       let edge_len = 0 in
       let edge_key = X.dummy in
       let refcount = 0 in
-      let data = No_data in
       let output = No_output in
+      let count = 0 in
       let max_child_squashed = 0 in
       let max_edge_squashed = 0 in
-      let rec t =
-        { edge_array; edge_start; edge_len; edge_key;
-          parent = t; suffix_link = t; next_sibling = t;
-          first_child = t; refcount; output;
-          data; max_edge_squashed; max_child_squashed; }
-      in
-      t
+      { edge_array; edge_start; edge_len; edge_key;
+        parent = dummy; suffix_link = dummy; next_sibling = dummy;
+        first_child = dummy; refcount; output;
+        queue_item = dummy_queue_item;
+        count; max_edge_squashed; max_child_squashed; }
 
     let is_dummy t = same t dummy
     let is_real t = not (is_dummy t)
+
+    module Queue = struct
+
+      module Item = struct
+
+        type nonrec t = queue_item
+
+        let root =
+          { node = dummy;
+            next = dummy_queue_item;
+            previous = dummy_queue_item }
+
+        let dummy = dummy_queue_item
+
+        let same t1 t2 = t1 == t2
+
+        let is_dummy t = same t dummy
+        let is_real t = not (is_dummy t)
+
+        let next item = item.next
+
+        let set_next item ~next =
+          item.next <- next
+
+        let set_previous item ~previous =
+          if is_real item then begin
+            item.previous <- previous
+          end
+
+        let fresh ~node ~previous ~next =
+          { node; previous; next; }
+
+      end
+
+      type t =
+        { mutable fronts : Item.t Array.t;
+          mutable max : int; }
+
+      let create () =
+        let fronts = [| |] in
+        let max = -1 in
+        { fronts; max }
+
+      let enlarge t =
+        let fronts = t.fronts in
+        let old_length = Array.length fronts in
+        let new_length = (old_length * 2) + 1 in
+        let new_fronts = Array.make new_length dummy_queue_item in
+        Array.blit fronts 0 new_fronts 0 old_length;
+        t.fronts <- new_fronts
+
+      let fresh_front_sentinel () =
+        let node = dummy in
+        let previous = dummy_queue_item in
+        let next = dummy_queue_item in
+        Item.fresh ~node ~previous ~next
+
+      let add t ~depth ~node =
+        if depth > t.max then begin
+          while depth >= Array.length t.fronts do
+            enlarge t
+          done;
+          t.max <- depth
+        end;
+        let front = t.fronts.(depth) in
+        let item =
+          if Item.is_real front then begin
+            let previous = front in
+            let next = Item.next front in
+            let item = Item.fresh ~node ~next ~previous in
+            Item.set_previous next ~previous:item;
+            Item.set_next previous ~next:item;
+            item
+          end else begin
+            let previous = fresh_front_sentinel () in
+            t.fronts.(depth) <- previous;
+            let next = Item.dummy in
+            let item = Item.fresh ~node ~previous ~next in
+            Item.set_next previous ~next:item;
+            item
+          end
+        in
+        node.queue_item <- item
+
+      let iter_front front depth f =
+        let current = ref (Item.next front) in
+        while Item.is_real !current do
+          let next_current = !current.next in
+          f ~depth !current;
+          current := next_current
+        done
+
+      let iter t f =
+        let fronts = t.fronts in
+        for i = t.max downto 0 do
+          iter_front fronts.(i) i f
+        done
+
+    end
 
     let label t =
       let rec loop acc t =
@@ -197,7 +279,8 @@ end = struct
 
       type t =
         { node : node;
-          children : node Tbl.t; }
+          children : node Tbl.t;
+          queue : Queue.t; }
 
       let create () =
         let edge_array = dummy_array in
@@ -207,18 +290,20 @@ end = struct
         let next_sibling = dummy in
         let first_child = dummy in
         let refcount = 0 in
-        let data = No_data in
+        let queue_item = Queue.Item.root in
         let output = No_output in
+        let count = 0 in
         let max_child_squashed = 0 in
         let max_edge_squashed = 0 in
         let rec node =
           { edge_array; edge_start; edge_len; edge_key;
             parent = node; suffix_link = node; next_sibling;
-            first_child; refcount; output;
-            data; max_edge_squashed; max_child_squashed }
+            first_child; refcount; output; queue_item;
+            count; max_edge_squashed; max_child_squashed }
         in
         let children = Tbl.create 37 in
-        { node; children }
+        let queue = Queue.create () in
+        { node; children; queue }
 
       let node t = t.node
 
@@ -227,6 +312,9 @@ end = struct
 
       let children t =
         t.children
+
+      let queue t =
+        t.queue
 
     end
 
@@ -290,7 +378,8 @@ end = struct
     let remove_child ~root ~parent ~child =
       if Root.is_node root parent then begin
         let key = child.edge_key in
-        Tbl.remove (Root.children root) key
+        Tbl.remove (Root.children root) key;
+        max_int
       end else begin
         let first_child = parent.first_child in
         let second_child = first_child.next_sibling in
@@ -300,7 +389,8 @@ end = struct
           parent.first_child <- second_child
         end else begin
           remove_from_child_list first_child second_child child
-        end
+        end;
+        refcount
       end
 
     let set_suffix ~root t ~suffix =
@@ -324,15 +414,16 @@ end = struct
       let suffix_link = dummy in
       let next_sibling = dummy in
       let first_child = dummy in
-      let data = No_data in
+      let queue_item = dummy_queue_item in
       let output = No_output in
+      let count = 0 in
       let refcount = 0 in
       let max_edge_squashed = parent.max_child_squashed in
       let max_child_squashed = parent.max_child_squashed in
       { edge_array; edge_start; edge_len; edge_key;
         parent; suffix_link; next_sibling;
-        first_child; refcount; output;
-        data; max_edge_squashed; max_child_squashed; }
+        first_child; refcount; output; queue_item;
+        count; max_edge_squashed; max_child_squashed; }
 
     let add_leaf ~root ~parent ~array ~index ~key =
       let node = fresh_leaf ~parent ~array ~index ~key in
@@ -352,14 +443,15 @@ end = struct
           let next_sibling = dummy in
           let refcount = 1 in
           let first_child = child in
-          let data = No_data in
+          let queue_item = dummy_queue_item in
           let output = No_output in
+          let count = 0 in
           let max_edge_squashed = child.max_edge_squashed in
           let max_child_squashed = child.max_edge_squashed in
           { edge_array; edge_start; edge_len; edge_key;
             parent; suffix_link; next_sibling;
-            first_child; refcount; output;
-            data; max_edge_squashed; max_child_squashed}
+            first_child; refcount; output; queue_item;
+            count; max_edge_squashed; max_child_squashed}
         in
         set_child ~root ~parent ~key:edge_key ~old_child:child ~new_child:new_node;
         child.edge_start <- edge_start + len;
@@ -479,11 +571,7 @@ end = struct
 
     let parent t = t.parent
 
-    let count t =
-      match t.data with
-      | Back_sentinel | Front_sentinel _ -> assert false
-      | No_data -> 0
-      | Data { count; _ } -> count
+    let count t = t.count
 
     let reset_descendents_count t =
       t.output <- No_output
@@ -598,96 +686,12 @@ end = struct
         fold_over_child_list f t.first_child acc
       end
 
-    let next data =
-      match data with
-      | No_data | Back_sentinel -> assert false
-      | Front_sentinel { next; _ }
-      | Data { next; _ } -> next
+    let add_to_count t ~count =
+      t.count <- t.count + count
 
-    let set_next data ~next =
-      match data with
-      | No_data | Back_sentinel -> assert false
-      | Front_sentinel k -> k.next <- next
-      | Data k -> k.next <- next
-
-    let set_previous data ~previous =
-      match data with
-      | No_data | Front_sentinel _ -> assert false
-      | Back_sentinel -> ()
-      | Data k -> k.previous <- previous
-
-      let is_back_sentinal data =
-        match data with
-        | Back_sentinel -> true
-        | _ -> false
-
-    module Queue = struct
-
-      type nonrec data = data
-
-      type t =
-        { mutable fronts : data Array.t;
-          mutable max : int; }
-
-      let create () =
-        let fronts = [| |] in
-        let max = -1 in
-        { fronts; max }
-
-      let enlarge t =
-        let fronts = t.fronts in
-        let old_length = Array.length fronts in
-        let new_length = (old_length * 2) + 1 in
-        let new_fronts = Array.make new_length Back_sentinel in
-        Array.blit fronts 0 new_fronts 0 old_length;
-        t.fronts <- new_fronts
-
-      let add t ~depth ~parent ~count =
-        if depth > t.max then begin
-          while depth >= Array.length t.fronts do
-            enlarge t
-          done;
-          for i = t.max + 1 to depth do
-            let empty = Front_sentinel { next = Back_sentinel } in
-            t.fronts.(i) <- empty
-          done;
-          t.max <- depth
-        end;
-        let previous = t.fronts.(depth) in
-        let next = next previous in
-        let data =
-          Data { parent; count; previous; next }
-        in
-        set_previous next ~previous:data;
-        set_next previous ~next:data;
-        data
-
-      let iter_front front depth f =
-        let current = ref (next front) in
-        while not (is_back_sentinal !current) do
-          let next_current = next !current in
-          f ~depth !current;
-          current := next_current
-        done
-
-      let iter t f =
-        let fronts = t.fronts in
-        for i = t.max downto 0 do
-          iter_front fronts.(i) i f
-        done
-
-    end
-
-    let add_to_count ~root ~queue t ~depth ~count =
-      if not (Root.is_node root t) then begin
-        match t.data with
-        | Back_sentinel | Front_sentinel _ -> assert false
-        | No_data ->
-            let parent = t in
-            let data = Queue.add queue ~depth ~parent ~count in
-            t.data <- data;
-            t.refcount <- t.refcount + 2
-        | Data c -> c.count <- c.count + count
+    let register_for_compression ~queue ~depth t =
+      if Queue.Item.is_dummy t.queue_item then begin
+        Queue.add queue ~depth ~node:t;
       end
 
     let add_squashed_child t ~upper_bound =
@@ -702,57 +706,67 @@ end = struct
 
     let rec squash ~root ~queue ~threshold
               ~depth ~count ~upper_bound ~refcount t =
+      t.count <- 0;
       let parent = t.parent in
       let suffix = t.suffix_link in
       let grand_parent = t.parent.suffix_link in
       add_squashed_edge t ~upper_bound;
       add_squashed_child parent ~upper_bound;
       let parent_depth = depth - t.edge_len in
-      let grand_parent_depth = parent_depth - 1 in
       let suffix_depth = depth - 1 in
       let grand_parent_count = 0 - count in
-      add_to_count ~root ~queue grand_parent
-        ~depth:grand_parent_depth ~count:grand_parent_count;
-      add_to_count ~root ~queue parent ~depth:parent_depth ~count;
-      if refcount = 0 then begin
-        remove_child ~root ~parent ~child:t;
-        let refcount = remove_incoming ~root suffix in
-        if refcount = 0 then begin
+      add_to_count grand_parent ~count:grand_parent_count;
+      add_to_count parent ~count;
+      add_to_count suffix ~count;
+      if is_removable refcount then begin
+        let parent_refcount = remove_child ~root ~parent ~child:t in
+        if is_mergable_or_removable parent_refcount then begin
+          register_for_compression ~queue ~depth:parent_depth parent
+        end;
+      end else if is_mergable refcount then begin
+        merge_child ~root ~parent t
+      end;
+      if is_mergable_or_removable refcount then begin
+        let suffix_refcount = remove_incoming ~root suffix in
+        if is_removable suffix_refcount then begin
+          let count = suffix.count in
           let delta = suffix.max_edge_squashed in
           let upper_bound = count + delta in
           if upper_bound < threshold then begin
             squash ~root ~queue ~threshold ~depth:suffix_depth
-              ~count ~upper_bound ~refcount suffix
+              ~count ~upper_bound ~refcount:suffix_refcount suffix
           end else begin
-            add_to_count ~root ~queue suffix ~depth:suffix_depth ~count
+            register_for_compression ~queue ~depth:suffix_depth suffix
           end
-        end else begin
-          add_to_count ~root ~queue suffix ~depth:suffix_depth ~count
-        end
-      end else begin
-        add_to_count ~root ~queue suffix ~depth:suffix_depth ~count;
-        if refcount = 1 then begin
-          merge_child ~root ~parent t;
-          ignore (remove_incoming ~root suffix)
+        end else if is_mergable suffix_refcount then begin
+          register_for_compression ~queue ~depth:suffix_depth suffix
         end
       end
 
-    let maybe_squash_data ~root ~queue ~threshold ~depth data =
-      match data with
-      | No_data | Back_sentinel | Front_sentinel _ ->
-        assert false
-      | Data { parent; count; next; previous } ->
-          let delta = parent.max_edge_squashed in
-          let upper_bound = count + delta in
-          if upper_bound < threshold then begin
-            set_previous next ~previous;
-            set_next previous ~next;
-            parent.data <- No_data;
-            let refcount = parent.refcount - 2 in
-            parent.refcount <- refcount;
-            squash ~root ~queue ~threshold ~depth
-              ~count ~upper_bound ~refcount parent
-          end
+    let maybe_squash_item ~root ~queue ~threshold ~depth item =
+        let node = item.node in
+        let count = node.count in
+        let delta = node.max_edge_squashed in
+        let upper_bound = count + delta in
+        if upper_bound < threshold then begin
+          let next = item.next in
+          let previous = item.previous in
+          Queue.Item.set_previous next ~previous;
+          Queue.Item.set_next previous ~next;
+          node.queue_item <- Queue.Item.dummy;
+          let refcount = node.refcount in
+          squash ~root ~queue ~threshold ~depth
+            ~count ~upper_bound ~refcount node
+        end
+
+    let compress ~root ~threshold =
+      let queue = Root.queue root in
+      Queue.iter queue (maybe_squash_item ~root ~queue ~threshold)
+
+    let add_to_count ~root ~depth ~count t =
+      let queue = Root.queue root in
+      add_to_count ~count t;
+      register_for_compression ~queue ~depth t
 
   end
 
@@ -936,7 +950,6 @@ end = struct
 
   type t =
     { root : Node.Root.t;
-      leaves : Node.Queue.t;
       mutable max_length : int;
       mutable count : int;
       bucket_size : int;
@@ -949,7 +962,6 @@ end = struct
 
   let create ~error =
     let root = Node.Root.create () in
-    let leaves = Node.Queue.create () in
     let max_length = 0 in
     let count = 0 in
     let bucket_size = Float.to_int (Float.ceil (1.0 /. error)) in
@@ -958,7 +970,7 @@ end = struct
     let active = Cursor.create ~at:(Node.Root.node root) in
     let previous_length = 0 in
     let state = Uncompressed in
-    { root; leaves; max_length; count;
+    { root; max_length; count;
       bucket_size; current_bucket; remaining_in_current_bucket;
       active; previous_length; state }
 
@@ -978,12 +990,6 @@ end = struct
         nodes.(i)
     done
 
-  let compress t =
-    let root = t.root in
-    let queue = t.leaves in
-    let threshold = t.current_bucket in
-    Node.Queue.iter queue (Node.maybe_squash_data ~root ~queue ~threshold)
-
   let rec ensure_suffix ~root cursor t =
     if not (Node.has_suffix t) then begin
       Cursor.goto_suffix ~root cursor t;
@@ -998,7 +1004,6 @@ end = struct
     if total_len > t.max_length then t.max_length <- total_len;
     t.count <- t.count + count;
     let root = t.root in
-    let queue = t.leaves in
     let active = t.active in
     let array, len, base =
       match t.state with
@@ -1010,30 +1015,30 @@ end = struct
         let array = Array.append common array in
         array, total_len, 0
     in
-    let rec loop array len base root queue active index j =
+    let rec loop array len base root active index j =
       if index >= len then begin
         let destination = Cursor.split_at ~root active in
         ensure_suffix ~root active destination;
         destination
       end else begin
-        loop_inner array len base root queue active index j
+        loop_inner array len base root active index j
       end
-    and loop_inner array len base root queue active index j =
+    and loop_inner array len base root active index j =
       if j > base + index then begin
-        loop array len base root queue active (index + 1) j
+        loop array len base root active (index + 1) j
       end else begin
         match Cursor.find_or_add_leaf ~root active ~array ~index with
         | Found ->
-            loop array len base root queue active (index + 1) j
+            loop array len base root active (index + 1) j
         | Added { parent; leaf } ->
             Cursor.goto_suffix ~root active parent;
             let leaf_suffix =
               if Node.has_suffix parent then begin
-                loop_inner array len base root queue active index (j + 1)
+                loop_inner array len base root active index (j + 1)
               end else begin
                 let suffix = Cursor.split_at ~root active in
                 let leaf_suffix =
-                  loop_inner array len base root queue active index (j + 1)
+                  loop_inner array len base root active index (j + 1)
                 in
                 Node.set_suffix ~root parent ~suffix;
                 leaf_suffix
@@ -1043,15 +1048,16 @@ end = struct
             leaf
       end
     in
-    let destination = loop array len base root queue active 0 0 in
-    Node.add_to_count ~root ~queue destination ~depth:total_len ~count;
+    let destination = loop array len base root active 0 0 in
+    Node.add_to_count ~root ~depth:total_len ~count destination;
     let remaining = t.remaining_in_current_bucket - 1 in
     if remaining <= 0 then begin
       t.current_bucket <- t.current_bucket + 1;
       t.remaining_in_current_bucket <- t.bucket_size;
       let destination_label = Node.label destination in
       Cursor.goto active (Node.Root.node t.root);
-      compress t;
+      let threshold = t.current_bucket in
+      Node.compress ~root ~threshold;
       t.previous_length <- 0;
       t.state <- Compressed destination_label
     end else begin
