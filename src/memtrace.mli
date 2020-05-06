@@ -1,3 +1,4 @@
+(*
 (** Generate and parse Memtrace allocation traces *)
 
 
@@ -17,7 +18,6 @@ val start_tracing : sampling_rate:float -> filename:string -> tracer
 
 (** Manually stop tracing *)
 val stop_tracing : tracer -> unit
-
 
 (** The remainder of this module consists of functions for parsing
    traces generated using the above *)
@@ -89,3 +89,7 @@ val close_trace : trace -> unit
 
 (** A hashtable type, keyed by obj_id *)
 module IdTbl : Hashtbl.SeededS with type key = obj_id
+ *)
+
+module Trace = Trace
+include (module type of Trace)

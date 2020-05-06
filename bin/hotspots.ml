@@ -125,7 +125,7 @@ let avg_dist_to_alloc (f : func) =
 type loc_table = {
   entries : loc_entry Loc_tbl.t;
   funcs : (string * string, func) Hashtbl.t;
-  trace : Memtrace.trace;
+  trace : Memtrace.trace_reader;
   mutable next_id : int;
 }
 

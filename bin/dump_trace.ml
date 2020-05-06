@@ -1,4 +1,4 @@
-open Memtrace
+open Memtrace.Trace
 let dump filename =
   let trace = open_trace ~filename in
   iter_trace trace (fun time ev ->

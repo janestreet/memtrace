@@ -1,4 +1,3 @@
 (library
  (name memtrace)
- (modules memtrace)
  (libraries unix threads))

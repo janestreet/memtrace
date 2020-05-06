@@ -1,4 +1,4 @@
-open Memtrace
+open Memtrace.Trace
 
 let print_duration ppf = function
   | n ->
@@ -23,7 +23,7 @@ let print_bytes ppf = function
 let identify filename =
   let trace = open_trace ~filename in
   let info = trace_info trace in
-  Printf.printf "Trace file %s (%a)\n" filename print_bytes (Int64.to_float info.file_size);
+  Printf.printf "Trace file %s (%a)\n" filename print_bytes (Int64.to_float (trace_size_bytes trace));
   let tm : Unix.tm = Unix.gmtime (Int64.to_float info.start_time *. 1e-6) in
   let days = [| "Sun"; "Mon"; "Tue"; "Wed"; "Thu"; "Fri"; "Sat" |] in
   let months = [| "Jan"; "Feb"; "Mar"; "Apr"; "May"; "Jun"; "Aug"; "Sep"; "Oct"; "Nov"; "Dec" |] in
