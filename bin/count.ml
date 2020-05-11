@@ -1,4 +1,4 @@
-open Memtrace
+open Memtrace.Trace
 
 let matches s loc =
   loc |> List.exists (fun l -> l.defname = s)

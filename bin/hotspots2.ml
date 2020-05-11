@@ -1,4 +1,4 @@
-open Memtrace
+open Memtrace.Trace
 
 module Hierarchical_heavy_hitters (X : Hashtbl.HashedType) : sig
 
@@ -169,7 +169,7 @@ let print_locations ppf locations =
     ppf locations
 
 let print_loc_code trace ppf loc =
-  let locations = Memtrace.lookup_location trace loc in
+  let locations = lookup_location trace loc in
   Format.pp_print_list ~pp_sep:Format.pp_print_space
     print_location ppf locations
 
@@ -183,7 +183,7 @@ let print_hitter trace tinfo total ppf (locs, _, count, _) =
   match locs with
   | [] -> ()
   | [only] -> begin
-      match Memtrace.lookup_location trace only with
+      match lookup_location trace only with
       | [] -> ()
       | [alloc] ->
           Format.fprintf ppf "@[<v 4>%a (%4.1f%%) at %s (%s:%d:%d-%d)@]"
@@ -196,7 +196,7 @@ let print_hitter trace tinfo total ppf (locs, _, count, _) =
             print_locations extra
     end
   | first :: backtrace -> begin
-      match Memtrace.lookup_location trace first with
+      match lookup_location trace first with
       | [] -> ()
       | [alloc] ->
           Format.fprintf ppf "@[<v 4>%a (%4.1f%%) at %s (%s:%d:%d-%d)@ %a@]"

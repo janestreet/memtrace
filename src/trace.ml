@@ -1,3 +1,8 @@
+(* This is the implementation of the encoder/decoder for the memtrace
+   format. This format is quite involved, and to understand it it's
+   best to read the CTF specification and comments in memtrace.tsl
+   first. *)
+
 (* Increment this when the format changes in an incompatible way *)
 let memtrace_version = 1
 
@@ -144,6 +149,9 @@ let event_of_code = function
 
 let event_header_time_len = 25
 let event_header_time_mask = 0x1ffffffl
+(* NB: packet_max_time is less than (1 lsl event_header_time_len) microsecs *)
+let packet_max_time = 30 * 1_000_000
+
 
 let put_event_header b ev t =
   let code =
@@ -170,7 +178,9 @@ let[@inline] get_event_header info b =
   (ev, time)
 
 
-(** Move-to-front coding. *)
+(** Move-to-front coding.
+
+    Used to encode filenames and function names in source locations *)
 
 type mtf_table = string array
 let mtf_length = 31
@@ -461,7 +471,7 @@ let log_new_loc s loc =
     s.new_locs_len <- s.new_locs_len + 1
   end
 
-let flush s =
+let flush_at s now =
   (* First, flush newly-seen locations.
      These must be emitted before any events that might refer to them *)
   let i = ref 0 in
@@ -488,7 +498,8 @@ let flush s =
     s.next_alloc_id;
   Buf.write_fd s.dest s.packet;
   (* Finally, reset the buffer *)
-  s.packet_time_start <- s.packet_time_end;
+  s.packet_time_start <- now;
+  s.packet_time_end <- now;
   s.new_locs_len <- 0;
   s.packet <- Buf.of_bytes s.packet.buf;
   s.start_alloc_id <- s.next_alloc_id;
@@ -502,13 +513,17 @@ let flush s =
 let max_ev_size = 4096  (* FIXME arbitrary number, overflow *)
 
 let begin_event s ev (now : timestamp) =
-  if remaining s.packet < max_ev_size || s.new_locs_len > 128 then flush s;
+  if remaining s.packet < max_ev_size
+     || s.new_locs_len > 128
+     || Int64.(sub now s.packet_time_start > of_int packet_max_time) then
+    flush_at s now;
   s.packet_time_end <- now;
   put_event_header s.packet ev now
 
+let flush s = flush_at s s.packet_time_end
 
-(** Actual events *)
 
+(** Event decoding and encoding, including backtraces *)
 
 let[@inline never] realloc_bbuf bbuf pos (x : int) =
   assert (pos = Array.length bbuf);
@@ -623,6 +638,8 @@ let put_alloc s now ~length ~nsamples ~is_major ~callstack ~decode_callstack_ent
     else begin
       let mask = cache_size - 1 in
       let slot = callstack.(pos) in
+      (* Pick the least recently used of two slots, selected by two
+         different hashes. *)
       let hash1 = ((slot * 0x4983723) lsr 11) land mask in
       let hash2 = ((slot * 0xfdea731) lsr 21) land mask in
       if cache.cache.(hash1) = slot then begin
@@ -686,6 +703,7 @@ let put_alloc s now ~length ~nsamples ~is_major ~callstack ~decode_callstack_ent
   (match cache.debug_cache with
    | None -> ()
    | Some c ->
+      (* Decode the backtrace and check that it matches *)
      let b' = Buf.of_bytes_sub b.buf ~pos:bt_elem_off ~pos_end:b.pos in
      let decoded, decoded_len = get_coded_backtrace c ncodes common_pfx_len b' in
      assert (remaining b' = 0);
@@ -811,6 +829,7 @@ let cache_verify cache info =
       (cache.cache_pred.(info.cache_verify_ix) = info.cache_verify_pred);
   end
 
+type timedelta = int64
 let iter_trace s ?(parse_backtraces=true) f =
   let cache = create_reader_cache () in
   let file_mtf = create_mtf_table () in
@@ -918,7 +937,8 @@ let put_event w ~decode_callstack_entry now ev =
        put_alloc w now ~length ~nsamples ~is_major
          ~callstack:btrev
          ~decode_callstack_entry in
-     assert (id = obj_id)
+     if id <> obj_id then
+       raise (Invalid_argument "Incorrect allocation ID")
   | Promote id ->
      put_promote w now id
   | Collect id ->

@@ -1,3 +1,5 @@
+open Memtrace.Trace
+
 module StrTbl = Hashtbl.Make(struct type t = string let equal = String.equal let hash = Hashtbl.hash end)
 type summary = {
   mutable samples: int;
@@ -21,7 +23,6 @@ let summary filename =
   let allocs = Hashtbl.create 20 in
   let sz = ref 0 in
   let nallocs = ref 0 in
-  let open Memtrace in
   let trace = open_trace ~filename in
   iter_trace trace (fun _time ev ->
     match ev with
@@ -59,7 +60,7 @@ let summary filename =
   | Promote _ -> ()
   (*count (Hashtbl.find allocs i)*)
   | Collect i -> assert (Hashtbl.mem allocs i); Hashtbl.remove allocs i );
-  Memtrace.close_trace trace;
+  close_trace trace;
 
   let rec dump_summary files_rev summary =
     if summary.samples > 0 then begin match List.rev files_rev with

@@ -1,6 +1,13 @@
 /* CTF 1.8 */
-/* Format specification for Memtrace v001 */
+/* Format specification for Memtrace v001.
 
+   This specification is in CTF format (see https://diamon.org/ctf/).
+
+   The trace format consists of a sequence of packets, each containing
+   a sequence of events.
+ */
+
+/* basic type definitions */
 typealias integer {size = 8;}  := uint8;
 typealias integer {size = 16;} := uint16;
 typealias integer {size = 32;} := uint32;
@@ -10,7 +17,8 @@ typealias integer {size = 16; signed = true;} := int16;
 typealias integer {size = 32; signed = true;} := int32;
 typealias floating_point {exp_dig = 11;mant_dig = 53;align = 8;} := float64;
 
-
+/* vint: variable-length encoding for unsigned 64-bit integers that
+   are usually small. */
 typealias struct {
   enum : uint8
     { u8 = 0...252, u16 = 253, u32 = 254, u64 = 255 } tag;
@@ -22,6 +30,7 @@ typealias struct {
   } value;
 } := vint;
 
+/* timestamps: microseconds since Unix epoch */
 clock {
   name = clk;
   freq = 1000000; /* microsecs */
@@ -33,6 +42,7 @@ typealias integer {
   map = clock.clk.value;
 } := clk64;
 
+/* CTF header: CTF 1.8, with the CTF magic number */
 trace {
   major = 1;
   minor = 8;
@@ -41,26 +51,57 @@ trace {
 };
 
 stream {
+  /* Packet header */
   packet.context := struct {
+    /* Size of the packet, in bits, including header */
     uint32 packet_size;
+
+    /* Timestamps of all events in this packet are between
+       timestamp_begin and timestamp_end (inclusive) */
     clk64 timestamp_begin;
     clk64 timestamp_end;
+
     uint32 flush_duration;
+
+    /* Version number of memtrace format.
+       Same for all packets in the trace. */
     uint16 version;
+
+    /* PID of the process that wrote the packet.
+       Since PID can change via fork(), occasionally packets with
+       the wrong PID can be found in a trace. These should be
+       silently ignored. Packets are written atomically, so these
+       bad packets can be skipped entirely. */
     uint64 pid;
 
+    /* See below. */
     uint16 cache_verify_ix;
     uint16 cache_verify_pred;
     uint64 cache_verify_val;
+
+    /* Allocation IDs of allocation events in this packet are
+       between alloc_id_begin and alloc_id_end (inclusive) */
     uint64 alloc_id_begin;
     uint64 alloc_id_end;
   };
+
+  /* Event header (32 bits)
+     
+     The timestamp field here is only 25 bits long, which means it
+     wraps after 2^25us (a bit over 30 seconds). So that timestamps
+     can be decoded unambiguously, no packet may contain more than 30
+     seconds worth of data. */
   event.header := struct {
     integer {size=25; align=1; signed=false; map=clock.clk.value;} timestamp;
     integer {size=7; align=1; signed=false;} id;
   };
 };
 
+
+/* Event 0: trace info.
+
+   Only one of these events is sent, in a packet by itself at the
+   start of the trace. */
 event {
   id = 0;
   name = "trace_info";
@@ -74,6 +115,28 @@ event {
   };
 };
 
+/* Event 1: source code location information.
+   
+   Location information is large, so to save space locations are
+   represented in backtraces by 64-bit opaque identifiers.
+
+   Before the first occurrence of such an identifier in a backtrace,
+   there must always be a location event explaining what that
+   identifer maps to.
+
+   The numeric fields below (line, start_char, end_char) have slightly
+   odd widths, chosen to match those in OCaml's internal debug info
+   format.
+
+   The text fields below (filename, defname) are move-to-front coded.
+   There is a 5-bit field for filename. Codes 0 to 30 refer to the
+   most recently used 31 filenames, and code 31 means that the
+   filename is not one of the most recent (Code 31 is followed by a
+   string).
+
+   Defnames (function and module names) are encoded in the same way,
+   using 31 independent MTF tables for each of the 31 most recent
+   files. */
 typealias struct {
   integer {size=20; align=1; signed=false;} line;
   integer {size=8; align=1; signed=false;} start_char;
@@ -97,10 +160,52 @@ event {
   name = "location";
   fields := struct {
     uint64 code;
+    /* A single code refers to a sequence of locations,
+       because of inlining */
     uint8 nlocs;
     location locs[nlocs];
   };
 };
+
+
+/* Event 2: Allocations.
+
+   Most of the data in the trace is the backtrace for each allocation,
+   so the format for backtraces does quite a lot to save space.
+
+   The backtrace is a sequence of location IDs (64-bit opaque codes,
+   see above). This sequence goes from caller to callee - main is at the
+   start of the sequence, and the allocation point at the end.
+
+   First, note that two successive backtraces likely share a long
+   common prefix. These frames are not encoded at all: instead, a
+   single vint common_prefix stores their length.
+
+   The remaining suffix is a sequence of 64-bit opaque codes. A cache
+   of size 2^14 is maintained. If one of the codes is present in the
+   cache, only its 14-bit index need be encoded. If not, a cache slot
+   is allocated to it, and the 14-bit index as well as the 64-bit code
+   are encoded.
+
+   Finally, each cache slot remembers which slot followed it the last
+   time it was encoded, called its "prediction". If it's followed by
+   the same slot next time, then the correctly predicted slot need not
+   be encoded at all. Only the number of correct predictions is
+   encoded, with a special case for the common cases of 0 or 1 correct
+   predictions.
+
+   In particular, this mechanism provides very short encodings of
+   repetitive subsequences, as found in backtraces for e.g. List.map.
+
+   Correct decoding of this requires that the decoder have precisely
+   the same cache and prediction state as the encoder. As a check to
+   ensure that these are not getting out of sync, a different slot's
+   contents and current prediction are written in each packet header
+   (see cache_verify_{ix,val,pred}), so that the decoder can verify
+   that the states match what it expects. (This is not a particularly
+   good defense against data corruption, although it will detect many
+   errors eventually. It is intended mainly to detect bugs in the
+   encoder and decoder implementation). */
 
 typealias struct {
   enum : integer {size=2; align=1; signed=false;} { hit0 = 0, hit1 = 1, hitN = 2, miss = 3 } tag;
@@ -117,14 +222,27 @@ event {
   id = 2;
   name = "alloc";
   fields := struct {
+    /* Wosize of the allocation (length, in words, excluding header) */
     vint length;
+    /* Number of samples at this allocation. 1 <= samples <= length+1 */
     vint samples;
+    /* 1 if allocated directly on the major heap, 0 otherwise */
     uint8 is_major;
-    vint common_prefix; /* number of slots shared by previous alloc */
-    uint16 new_suffix; /* number of new slots */
+    /* Backtrace. See above. */
+    vint common_prefix;
+    uint16 new_suffix;
     backtrace_code backtrace[new_suffix];
   };
 };
+
+/* Event 3: Promotion.
+
+   The only information needed for a promotion (beyond the timestamp,
+   which is part of the header) is the ID of the object promoted.
+
+   This ID must be less than or equal to the ID of the last allocation,
+   so (last_alloc_id - promoted_id) is a nonnegative number, often small.
+   This number is encoded as a vint */
 
 event {
   id = 3;
@@ -134,6 +252,9 @@ event {
   };
 };
 
+/* Event 4: Collection.
+
+   Same coding as promotion */
 event {
   id = 4;
   name = "collect";
@@ -142,6 +263,12 @@ event {
   };
 };
 
+
+/* Events 101-116. Allocations (short format)
+
+   Most allocations are small, on the minor heap, with a single sample,
+   and a small number of new backtrace slots. These are given a shorter
+   encoding, using the same format for backtraces */
 
 typealias struct {
   vint common_prefix;
