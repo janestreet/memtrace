@@ -33,6 +33,10 @@ let timestamp_of_float t =
 let float_of_timestamp t =
   (Int64.to_float t) /. 1_000_000.
 
+(* Small enough that Unix.write still does single writes.
+   (i.e. below 64k) *)
+let max_packet_size = 1 lsl 15
+
 type packet_header_info = {
   content_size: int; (* bytes, excluding header *)
   time_begin : timestamp;
@@ -80,7 +84,7 @@ let finish_ctf_header hdr b tstart tend alloc_id_begin alloc_id_end =
   update_32 b hdr.off_packet_size (Int32.mul (Int32.of_int size) 8l);
   update_64 b hdr.off_timestamp_begin tstart;
   update_64 b hdr.off_timestamp_end tend;
-  update_32 b hdr.off_flush_duration 0l; (* FIXME flush duration *)
+  update_32 b hdr.off_flush_duration 0l; (* CR sdolan: is flush duration useful? *)
   update_64 b hdr.off_alloc_begin (Int64.of_int alloc_id_begin);
   update_64 b hdr.off_alloc_end (Int64.of_int alloc_id_end)
 
@@ -228,7 +232,7 @@ type location = {
   defname : string;
 }
 
-(* FIXME: max_location overflow *)
+(* CR sdolan: ensure this can't overflow *)
 let max_location = 4 * 1024
 let put_backtrace_slot b file_mtf defn_mtfs (id, locs) =
   let max_locs = 255 in
@@ -316,7 +320,6 @@ type trace_info = {
 }
 
 let put_trace_info b info =
-  (* FIXME: begin_event? *)
   put_event_header b Ev_trace_info info.start_time;
   put_float b info.sample_rate;
   put_8 b info.word_size;
@@ -407,8 +410,7 @@ type trace_writer = {
 let default_getpid () = Int64.of_int (Unix.getpid ())
 
 let make_writer dest ?(getpid=default_getpid) info =
-  (* FIXME magic number sizes *)
-  let packet = Buf.of_bytes (Bytes.make (1 lsl 15) '\042') in
+  let packet = Buf.of_bytes (Bytes.make max_packet_size '\042') in
   begin
     (* Write the trace info packet *)
     let hdr = put_ctf_header packet getpid 0xffff 0 0L in
@@ -427,8 +429,7 @@ let make_writer dest ?(getpid=default_getpid) info =
       defn_mtfs = Array.init mtf_length (fun _ -> create_mtf_table ());
       new_locs = [| |];
       new_locs_len = 0;
-      (* FIXME magic size *)
-      new_locs_buf = Bytes.make 8000 '\042';
+      new_locs_buf = Bytes.make max_packet_size '\042';
       cache = cache;
       last_callstack = [| |];
       next_alloc_id = 0;
@@ -510,7 +511,8 @@ let flush_at s now =
     put_ctf_header s.packet s.getpid
       ix s.cache.cache_next.(ix) (Int64.of_int s.cache.cache.(ix))
 
-let max_ev_size = 4096  (* FIXME arbitrary number, overflow *)
+(* CR sdolan: make sure that events are actually bounded by this size *)
+let max_ev_size = 4096
 
 let begin_event s ev (now : timestamp) =
   if remaining s.packet < max_ev_size
@@ -695,7 +697,7 @@ let put_alloc s now ~length ~nsamples ~is_major ~callstack ~decode_callstack_ent
      assert (ncodes <= 0xff);
      update_8 b p ncodes
   | Len_long p ->
-     (* FIXME: bound this properly *)
+     (* CR sdolan: make sure this can't overflow *)
      assert (ncodes <= 0xffff);
      update_16 b p ncodes
   end;
@@ -792,8 +794,7 @@ type trace_reader = {
 }
 
 let make_reader fd =
-  (* FIXME magic numbers *)
-  let buf = Bytes.make 4096 '\042' in
+  let buf = Bytes.make max_packet_size '\042' in
   let start_pos = Unix.lseek fd 0 SEEK_CUR in
   let b = Buf.read_fd fd buf in
   let packet_info = get_ctf_header b in
@@ -872,9 +873,9 @@ let iter_trace s ?(parse_backtraces=true) f =
     check_fmt "alloc id sync"
       (packet_header.alloc_id_end = Int64.of_int !alloc_id) in
   Unix.lseek s.fd s.data_off SEEK_SET |> ignore;
-  (* FIXME magic numbers *)
   let rec iter_packets stream =
-    let stream = refill_to 4096 s.fd stream in
+    let header_upper_bound = 200 (* more than big enough for a header *) in
+    let stream = refill_to header_upper_bound s.fd stream in
     if remaining stream = 0 then () else
     let packet_header = get_ctf_header stream in
     let stream = refill_to packet_header.content_size s.fd stream in
@@ -891,7 +892,7 @@ let iter_trace s ?(parse_backtraces=true) f =
         !alloc_id packet_header.alloc_id_begin packet_header.alloc_id_end
     end;
     iter_packets rest in
-  iter_packets (Buf.read_fd s.fd (Bytes.make (1 lsl 15) '\000'))
+  iter_packets (Buf.read_fd s.fd (Bytes.make max_packet_size '\000'))
 
 
 (** Convenience functions and accessors *)
