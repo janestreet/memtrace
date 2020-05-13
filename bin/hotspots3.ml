@@ -1,7 +1,7 @@
 (* A generalized suffix tree based on Ukkonen's algorithm
    combined with lossy counting. *)
 
-open Memtrace
+open Memtrace.Trace
 
 module type Char = sig
 
@@ -1142,7 +1142,7 @@ let print_locations ppf locations =
     ppf locations
 
 let print_loc_code trace ppf loc =
-  print_locations ppf (List.rev (Memtrace.lookup_location trace loc))
+  print_locations ppf (List.rev (Memtrace.Trace.lookup_location trace loc))
 
 let print_loc_codes trace ppf locs =
   for i = (Array.length locs) - 1 downto 0 do
