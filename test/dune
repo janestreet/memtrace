@@ -1,0 +1,7 @@
+(executables
+ (names test copy)
+ (libraries memtrace))
+
+(rule
+ (alias runtest)
+ (action (run ./test.exe)))
