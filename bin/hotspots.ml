@@ -78,9 +78,9 @@ end
 
 
 module Loc_tbl = Hashtbl.Make (struct
-  type t = location_code
-  let hash (x : location_code) = ((x :> int) * 984372984721) lsr 17
-  let equal (x : location_code) (y : location_code) = (x = y)
+  type t = Location_code.t
+  let hash (x : Location_code.t) = ((x :> int) * 984372984721) lsr 17
+  let equal (x : Location_code.t) (y : Location_code.t) = (x = y)
 end)
 
 module Str_tbl = Hashtbl.Make (struct
@@ -125,7 +125,7 @@ let avg_dist_to_alloc (f : func) =
 type loc_table = {
   entries : loc_entry Loc_tbl.t;
   funcs : (string * string, func) Hashtbl.t;
-  trace : trace_reader;
+  trace : Reader.t;
   mutable next_id : int;
 }
 
@@ -136,7 +136,7 @@ let new_loc_table trace =
     next_id = 0 }
 
 let rec describe_location ?(max_discard=2) trace buf i =
-  match lookup_location trace buf.(i) with
+  match Reader.lookup_location_code trace buf.(i) with
   | [] when i > 0 && max_discard > 0 ->
     describe_location ~max_discard:(max_discard - 1) trace buf (i-1)
   | [] -> "??", Printf.sprintf "#%x" (buf.(i) :> int), 0, 0, 0
@@ -183,12 +183,12 @@ end)
 
 
 let count filename =
-  let trace = open_trace ~filename in
+  let trace = Reader.open_ ~filename in
   let hh = HH.make 10000 in
   let seen = Func_tbl.create 100 in
   let locs = new_loc_table trace in
   let total_samples = ref 0 in
-  iter_trace trace (fun _time ev ->
+  Reader.iter trace (fun _time ev ->
       match ev with
       | Alloc {obj_id=_; length=_; nsamples; is_major=_;
                backtrace_buffer; backtrace_length; common_prefix=_} ->
@@ -209,8 +209,8 @@ let count filename =
          total_samples := !total_samples + nsamples
       | Promote _ -> ()
       | Collect _ -> ());
-  let tinfo = trace_info trace in
-  close_trace trace;
+  let tinfo = Reader.info trace in
+  Reader.close trace;
   let total_samples = !total_samples in
   let wordsize = 8. in  (* FIXME: store this in the trace *)
   let print_bytes ppf = function

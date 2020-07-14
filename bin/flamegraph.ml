@@ -23,19 +23,19 @@ let summary filename =
   let allocs = Hashtbl.create 20 in
   let sz = ref 0 in
   let nallocs = ref 0 in
-  let trace = open_trace ~filename in
-  iter_trace trace (fun _time ev ->
+  let trace = Reader.open_ ~filename in
+  Reader.iter trace (fun _time ev ->
     match ev with
   | Alloc {obj_id; length=_; nsamples; is_major=_;
            backtrace_buffer; backtrace_length; common_prefix=_ } ->
-    let str_of_location l =
+    let str_of_location (l : Location.t) =
       l.defname
       (*Printf.sprintf "%s:%d" filename line*) in
-    let _print_location ppf { filename; line; start_char; end_char; _  } =
+    let _print_location ppf Location.{ filename; line; start_char; end_char; _  } =
       Printf.fprintf ppf "%s:%d:%d-%d" filename line start_char end_char in
     let filenames = List.concat (Array.sub backtrace_buffer 0 backtrace_length |> Array.map (fun l ->
-      let locs = lookup_location trace l in
-      List.map (fun ({ filename=_; _ } as l) -> str_of_location l) locs) |> Array.to_list) in
+      let locs = Reader.lookup_location_code trace l in
+      List.map (fun (Location.{ filename=_; _ } as l) -> str_of_location l) locs) |> Array.to_list) in
     let seen = StrTbl.create 10 in
     let rec dedup = function
       | [] -> []
@@ -60,7 +60,7 @@ let summary filename =
   | Promote _ -> ()
   (*count (Hashtbl.find allocs i)*)
   | Collect i -> assert (Hashtbl.mem allocs i); Hashtbl.remove allocs i );
-  close_trace trace;
+  Reader.close trace;
 
   let rec dump_summary files_rev summary =
     if summary.samples > 0 then begin match List.rev files_rev with

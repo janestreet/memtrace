@@ -1,5 +1,5 @@
 /* CTF 1.8 */
-/* Format specification for Memtrace v001.
+/* Format specification for Memtrace v002.
 
    This specification is in CTF format (see https://diamon.org/ctf/).
 
@@ -112,6 +112,7 @@ event {
     string host_name;
     string ocaml_runtime_params;
     uint64 pid;
+    string context;
   };
 };
 

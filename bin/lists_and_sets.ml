@@ -1,5 +1,4 @@
-let () =
-  Memtrace.trace_until_exit ~sampling_rate:0.001 ~filename:"memtrace.ctf"
+let () = Memtrace.trace_if_requested ()
 
 let[@inline always] asdf i = ((i * 483205) land 0xfffff, i)
 let[@inline always] mul i = let m = asdf i in assert (i >= 0); m
