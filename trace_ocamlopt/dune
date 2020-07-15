@@ -1,0 +1,3 @@
+(executable
+ (name ocamlopt)
+ (libraries memtrace compiler-libs.optcomp))
