@@ -27,4 +27,3 @@ build: [
   ]
 ]
 dev-repo: "git+https://github.com/janestreet/memtrace.git"
-doc: "https://ocaml.janestreet.com/ocaml-core/latest/doc/memtrace/index.html"
