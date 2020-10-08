@@ -79,10 +79,20 @@ module Write = struct
     Bytes.unsafe_set b.buf (b.pos + slen) '\000';
     b.pos <- b.pos + slen + 1
 
+  (* The constant 0xffffffff cannot be written in 32-bit OCaml *)
+  let max_32_vint =
+    let msb =
+      if max_int > 0x3fffffff then
+        1 lsl 31
+      else
+        0
+    in
+      0x7fffffff lor msb
+
   let[@inline never] put_vint_big b v =
     if v = v land 0xffff then
       (put_8 b 253; put_16 b v)
-    else if v = v land 0xffffffff then
+    else if v = v land max_32_vint then
       (put_8 b 254; put_32 b (Int32.of_int v))
     else
       (put_8 b 255; put_64 b (Int64.of_int v))
