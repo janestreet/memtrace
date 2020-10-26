@@ -4,7 +4,7 @@ let with_temp f =
   let s = Filename.temp_file "memtrace" "ctf" in
   let fd = Unix.openfile s [O_RDWR] 0o600 in
   Fun.protect
-    ~finally:(fun () -> Unix.unlink s)
+    ~finally:(fun () -> if Sys.file_exists s then Unix.unlink s)
     (fun () -> f fd)
 
 let mkloc filename line start_char end_char defname =
@@ -140,7 +140,8 @@ let test_failure () = with_temp @@ fun fd ->
     ()
   done;
   let rd, wr = Unix.pipe () in
-  Sys.set_signal Sys.sigpipe Signal_ignore;
+  if not Sys.win32 then
+    Sys.set_signal Sys.sigpipe Signal_ignore;
   Unix.close rd;
   Unix.dup2 wr fd;
   Unix.close wr;
