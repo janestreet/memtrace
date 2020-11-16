@@ -82,7 +82,7 @@ module Write = struct
   let[@inline never] put_vint_big b v =
     if v = v land 0xffff then
       (put_8 b 253; put_16 b v)
-    else if v = v land 0xffffffff then
+    else if v = Int32.to_int (Int32.of_int v) then
       (put_8 b 254; put_32 b (Int32.of_int v))
     else
       (put_8 b 255; put_64 b (Int64.of_int v))
