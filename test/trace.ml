@@ -16,24 +16,38 @@ let go () =
     let n = long_bt 10_000 in
     assert (n > 0);
   done;
+  for _i = 1 to 1000 do
+    Option.iter Memtrace.External.free
+      (Memtrace.External.alloc ~bytes:((Sys.word_size / 8) * 7))
+  done;
   Memtrace.stop_tracing t;
   let r = Memtrace.Trace.Reader.open_ ~filename in
   let first = ref true in
   let n_long = ref 0 in
+  let last_ext = ref None in
+  let ext_samples = ref 0 in
   Memtrace.Trace.Reader.iter r (fun _ ev ->
     match ev with
     | Alloc info when !first ->
       first := false;
       assert (info.length = 4242);
       ()
-    | Alloc bt ->
-      assert (bt.length = 1000);
+    | Alloc info when info.length = 1000 ->
       (* backtraces should be truncated *)
-      assert (bt.backtrace_length > 3500 && bt.backtrace_length < 4000);
+      assert (info.backtrace_length > 3500 && info.backtrace_length < 4000);
       incr n_long
-    | _ -> assert false);
+    | Alloc info when info.length = 7 ->
+      last_ext := Some info.obj_id;
+      ext_samples := !ext_samples + info.nsamples;
+    | Collect id ->
+      assert (!last_ext = Some id);
+      last_ext := None
+    | e ->
+      failwith ("unexpected " ^ (Memtrace.Trace.Event.to_string
+                                   (Memtrace.Trace.Reader.lookup_location_code r) e)));
   Memtrace.Trace.Reader.close r;
   Unix.unlink filename;
+  assert (650 <= !ext_samples && !ext_samples < 750);
   assert (not !first);
   assert (!n_long = 10)
 
