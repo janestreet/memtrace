@@ -1,4 +1,4 @@
-(executables (names test trace copy) (libraries memtrace))
+(executables (names test trace copy geom_sampler) (libraries memtrace))
 
 (rule
   (alias runtest)
@@ -7,6 +7,12 @@
 (rule
   (alias runtest)
   (action (run ./trace.exe)))
+
+(rule (action (with-stdout-to geom_sampler.out (run ./geom_sampler.exe))))
+
+(rule
+  (alias runtest)
+  (action (diff geom_sampler.expected geom_sampler.out)))
 
 (rule
  (targets ocamlopt.ctf.copy)
