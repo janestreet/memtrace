@@ -20,6 +20,8 @@
     zero-based distribution. *)
 type t
 
+(** Create a sampler with a given sampling rate and randomness source.
+    The default for [rand] uses a constant seed, giving deterministic results *)
 val make : ?rand:Random.State.t -> sampling_rate:float -> unit -> t
 
 (** Returns a geometrically-distributed random integer in the range [1..inf)

@@ -122,6 +122,7 @@ let[@inline never] ext_alloc_slowpath ~bytes =
     if lock_tracer_ext s then begin
       match
         let bytes_per_word = Sys.word_size / 8 in
+        (* round up to an integer number of words *)
         let size_words = (bytes + bytes_per_word - 1) / bytes_per_word in
         let samples = ref 0 in
         while !bytes_before_ext_sample <= 0 do
@@ -129,16 +130,14 @@ let[@inline never] ext_alloc_slowpath ~bytes =
             !bytes_before_ext_sample + draw_sampler_bytes s;
           incr samples
         done;
-        if !samples = 0 then None
-        else begin
-          let callstack = Printexc.get_callstack max_int in
-          Some (Trace.Writer.put_alloc_with_raw_backtrace s.trace
-                  (Trace.Timestamp.now ())
-                  ~length:size_words
-                  ~nsamples:!samples
-                  ~is_major:true
-                  ~callstack)
-        end
+        assert (!samples > 0);
+        let callstack = Printexc.get_callstack max_int in
+        Some (Trace.Writer.put_alloc_with_raw_backtrace s.trace
+                (Trace.Timestamp.now ())
+                ~length:size_words
+                ~nsamples:!samples
+                ~is_major:true
+                ~callstack)
       with
       | r -> unlock_tracer_ext s; r
       | exception e -> mark_failed s e; None
