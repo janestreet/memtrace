@@ -31,3 +31,21 @@ module Trace = Trace
 (** Use Memprof_tracer in conjunction with Trace.Writer for more manual
     control over trace collection *)
 module Memprof_tracer = Memprof_tracer
+
+(** Use External to track non-GC-heap allocations in a Memtrace trace *)
+module External : sig
+  type token [@@immediate]
+
+  (** [alloc ~bytes] reports an allocation of a given number of bytes.
+
+      If tracing is enabled, a small fraction of the calls to this function
+      will return [Some tok], where [tok] should be passed to [free] when
+      the object is freed.
+
+      This function is very fast in the common case where it returns [None] *)
+  val alloc : bytes:int -> token option
+  val free : token -> unit
+end
+
+(** (For testing) *)
+module Geometric_sampler = Geometric_sampler
