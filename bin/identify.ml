@@ -28,7 +28,7 @@ let identify filename =
   let start_time = Timestamp.to_int64 info.start_time in
   let tm : Unix.tm = Unix.gmtime (Int64.to_float start_time *. 1e-6) in
   let days = [| "Sun"; "Mon"; "Tue"; "Wed"; "Thu"; "Fri"; "Sat" |] in
-  let months = [| "Jan"; "Feb"; "Mar"; "Apr"; "May"; "Jun"; "Aug"; "Sep"; "Oct"; "Nov"; "Dec" |] in
+  let months = [| "Jan"; "Feb"; "Mar"; "Apr"; "May"; "Jun"; "Jul"; "Aug"; "Sep"; "Oct"; "Nov"; "Dec" |] in
   Printf.printf "   of %s\n" info.executable_name;
   Printf.printf "   at %s %s %d %02d:%02d:%02d %d UTC\n"
     days.(tm.tm_wday) months.(tm.tm_mon) tm.tm_mday tm.tm_hour tm.tm_min tm.tm_sec (tm.tm_year + 1900);
