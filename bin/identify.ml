@@ -50,8 +50,8 @@ let identify filename =
   Reader.iter ~parse_backtraces:false trace (fun t ev ->
     tmax := Timedelta.to_int64 t;
     match ev with
-    | Alloc {obj_id; length; nsamples; is_major; _} ->
-       if is_major then begin
+    | Alloc {obj_id; length; nsamples; source; _} ->
+       if source <> Minor then begin
          major_alloc := !major_alloc + nsamples;
          if nsamples > 1 then
            Obj_id.Tbl.add major_live_multisampled obj_id nsamples

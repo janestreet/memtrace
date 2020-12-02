@@ -190,7 +190,7 @@ let count filename =
   let total_samples = ref 0 in
   Reader.iter trace (fun _time ev ->
       match ev with
-      | Alloc {obj_id=_; length=_; nsamples; is_major=_;
+      | Alloc {obj_id=_; length=_; nsamples; source=_;
                backtrace_buffer; backtrace_length; common_prefix=_} ->
          let allocpt = add_loc locs backtrace_buffer (backtrace_length - 1) in
          allocpt.alloc_count <- allocpt.alloc_count + nsamples;

@@ -361,13 +361,17 @@ module Location_code = struct
   module Tbl = IntTbl
 end
 
+module Allocation_source = struct
+  type t = Minor | Major | External
+end
+
 module Event = struct
   type t =
     | Alloc of {
         obj_id : Obj_id.t;
         length : int;
         nsamples : int;
-        is_major : bool;
+        source : Allocation_source.t;
         backtrace_buffer : Location_code.t array;
         backtrace_length : int;
         common_prefix : int;
@@ -376,7 +380,7 @@ module Event = struct
     | Collect of Obj_id.t
 
   let to_string decode_loc = function
-    | Alloc {obj_id; length; nsamples; is_major;
+    | Alloc {obj_id; length; nsamples; source;
              backtrace_buffer; backtrace_length; common_prefix} ->
       let backtrace =
         List.init backtrace_length (fun i ->
@@ -385,8 +389,13 @@ module Event = struct
             | [] -> Printf.sprintf "$%d" (s :> int)
             | ls -> String.concat " " (List.map Location.to_string ls))
         |> String.concat " " in
+      let alloc_src =
+        match source with
+        | Minor -> "alloc"
+        | Major -> "alloc_major"
+        | External -> "alloc_ext" in
       Printf.sprintf "%010d %s %d len=%d % 4d: %s"
-        (obj_id :> int) (if is_major then "alloc_major" else "alloc")
+        (obj_id :> int) alloc_src
         nsamples length common_prefix
         backtrace;
     | Promote id ->
@@ -480,14 +489,14 @@ type alloc_length_format =
   | Len_short of Write.position_8
   | Len_long of Write.position_16
 
-let put_alloc s now ~length ~nsamples ~is_major
+let put_alloc s now ~length ~nsamples ~source
     ~callstack ~callstack_as_ints ~decode_callstack_entry =
   let open Write in
   let suff = find_common_suffix s.last_callstack callstack_as_ints in
   s.last_callstack <- callstack_as_ints;
   let is_short =
     1 <= length && length <= 16
-    && not is_major
+    && source = Allocation_source.Minor
     && nsamples = 1
     && suff < 255 in
   begin_event s (if is_short then Ev_short_alloc length else Ev_alloc) ~now;
@@ -496,6 +505,11 @@ let put_alloc s now ~length ~nsamples ~is_major
   let cache = s.cache in
   let b = s.packet in
   let common_pfx_len = Array.length callstack_as_ints - 1 - suff in
+  let src_code =
+    match source with
+    | Minor -> 0
+    | Major -> 1
+    | External -> 2 in
   let bt_len_off =
     if is_short then begin
       put_vint b common_pfx_len;
@@ -503,7 +517,7 @@ let put_alloc s now ~length ~nsamples ~is_major
     end else begin
       put_vint b length;
       put_vint b nsamples;
-      put_8 b (if is_major then 1 else 0);
+      put_8 b src_code;
       put_vint b common_pfx_len;
       Len_long (skip_16 b)
     end in
@@ -551,19 +565,20 @@ let put_alloc s now ~length ~nsamples ~is_major
 
 let get_alloc ~parse_backtraces evcode cache alloc_id b =
   let open Read in
-  let is_short, length, nsamples, is_major =
+  let is_short, length, nsamples, source =
     match evcode with
     | Ev_short_alloc n ->
-       true, n, 1, false
+       true, n, 1, Allocation_source.Minor
     | Ev_alloc -> begin
        let length = get_vint b in
        let nsamples = get_vint b in
-       let is_major =
+       let source : Allocation_source.t =
          match get_8 b with
-         | 0 -> false
-         | 1 -> true
+         | 0 -> Minor
+         | 1 -> Major
+         | 2 -> External
          | _ -> bad_format "is_major" in
-       false, length, nsamples, is_major
+       false, length, nsamples, source
       end
     | _ -> assert false in
   let common_pfx_len = get_vint b in
@@ -576,7 +591,7 @@ let get_alloc ~parse_backtraces evcode cache alloc_id b =
       Backtrace_codec.Reader.skip_backtrace cache b ~nencoded ~common_pfx_len;
       [| |], 0
     end in
-  Event.Alloc { obj_id = alloc_id; length; nsamples; is_major;
+  Event.Alloc { obj_id = alloc_id; length; nsamples; source;
                 backtrace_buffer; backtrace_length;
                 common_prefix=common_pfx_len }
 
@@ -749,17 +764,17 @@ module Writer = struct
     get_locations (get_raw_backtrace_slot callstack i) |> List.rev
 
   let put_alloc_with_raw_backtrace t now ~length ~nsamples
-    ~is_major ~callstack =
+    ~source ~callstack =
     let callstack_as_ints = location_code_array_of_raw_backtrace callstack in
-    put_alloc t now ~length ~nsamples ~is_major
+    put_alloc t now ~length ~nsamples ~source
       ~callstack ~callstack_as_ints
       ~decode_callstack_entry:decode_raw_backtrace_entry
 
-  let put_alloc t now ~length ~nsamples ~is_major
+  let put_alloc t now ~length ~nsamples ~source
         ~callstack ~decode_callstack_entry =
     let decode_callstack_entry cs i =
       decode_callstack_entry cs.(i) in
-    put_alloc t now ~length ~nsamples ~is_major
+    put_alloc t now ~length ~nsamples ~source
       ~callstack ~callstack_as_ints:callstack ~decode_callstack_entry
   let put_collect = put_collect
   let put_promote = put_promote
@@ -768,12 +783,12 @@ module Writer = struct
 
   let put_event w ~decode_callstack_entry now (ev : Event.t) =
     match ev with
-    | Alloc { obj_id; length; nsamples; is_major;
+    | Alloc { obj_id; length; nsamples; source;
               backtrace_buffer; backtrace_length; common_prefix = _ } ->
       let btrev = Array.init backtrace_length (fun i ->
           backtrace_buffer.(backtrace_length - 1 - i)) in
       let id =
-        put_alloc w now ~length ~nsamples ~is_major
+        put_alloc w now ~length ~nsamples ~source
           ~callstack:btrev
           ~decode_callstack_entry in
       if id <> obj_id then
