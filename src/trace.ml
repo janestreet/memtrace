@@ -577,7 +577,7 @@ let get_alloc ~parse_backtraces evcode cache alloc_id b =
          | 0 -> Minor
          | 1 -> Major
          | 2 -> External
-         | _ -> bad_format "is_major" in
+         | _ -> bad_format "source" in
        false, length, nsamples, source
       end
     | _ -> assert false in
