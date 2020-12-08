@@ -4,8 +4,13 @@ let dump filename =
   Reader.iter trace (fun time ev ->
     Printf.printf "%010Ld " (Timedelta.to_int64 time);
     match ev with
-  | Alloc {obj_id; length; nsamples; is_major; backtrace_buffer; backtrace_length; common_prefix} ->
-    Printf.printf "%010d %s %d len=%d % 4d:" (obj_id :> int) (if is_major then "alloc_major" else "alloc") nsamples length common_prefix;
+  | Alloc {obj_id; length; nsamples; source; backtrace_buffer; backtrace_length; common_prefix} ->
+    let src =
+      match source with
+      | Minor -> "alloc"
+      | Major -> "alloc_major"
+      | External -> "alloc_ext" in
+    Printf.printf "%010d %s %d len=%d % 4d:" (obj_id :> int) src nsamples length common_prefix;
     let print_location ppf loc =
       Printf.fprintf ppf "%s" (Location.to_string loc) in
     for i = 0 to backtrace_length - 1 do

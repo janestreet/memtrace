@@ -53,6 +53,11 @@ module Location_code : sig
   module Tbl : Hashtbl.SeededS with type key = t
 end
 
+(** Types of allocation *)
+module Allocation_source : sig
+  type t = Minor | Major | External
+end
+
 (** Trace events *)
 module Event : sig
   type t =
@@ -64,8 +69,8 @@ module Event : sig
         (** Length of the sampled allocation, in words, not including header word *)
         nsamples : int;
         (** Number of samples made in this allocation. At least 1. *)
-        is_major : bool;
-        (** Whether this object was initially allocated on the major heap *)
+        source : Allocation_source.t;
+        (** How this object was initially allocated *)
         backtrace_buffer : Location_code.t array;
         (** Backtrace of the allocation.
             The backtrace elements are stored in order from caller to callee.
@@ -113,7 +118,7 @@ module Writer : sig
     -> Timestamp.t
     -> length:int
     -> nsamples:int
-    -> is_major:bool
+    -> source:Allocation_source.t
     -> callstack:Location_code.t array
     -> decode_callstack_entry:(Location_code.t -> Location.t list)
     -> Obj_id.t
@@ -122,7 +127,7 @@ module Writer : sig
     -> Timestamp.t
     -> length:int
     -> nsamples:int
-    -> is_major:bool
+    -> source:Allocation_source.t
     -> callstack:Printexc.raw_backtrace
     -> Obj_id.t
   val put_collect : t -> Timestamp.t -> Obj_id.t -> unit

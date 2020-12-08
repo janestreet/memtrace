@@ -219,6 +219,8 @@ typealias struct {
   } v;
 } := backtrace_code;
 
+enum allocation_source : uint8 { MINOR=0, MAJOR=1, EXTERNAL=2 }
+
 event {
   id = 2;
   name = "alloc";
@@ -227,8 +229,8 @@ event {
     vint length;
     /* Number of samples at this allocation. 1 <= samples <= length+1 */
     vint samples;
-    /* 1 if allocated directly on the major heap, 0 otherwise */
-    uint8 is_major;
+    /* major/minor/external */
+    allocation_source source;
     /* Backtrace. See above. */
     vint common_prefix;
     uint16 new_suffix;

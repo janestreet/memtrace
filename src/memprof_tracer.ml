@@ -65,7 +65,7 @@ let start ?(report_exn=default_report_exn) ~sampling_rate trace =
         match Trace.Writer.put_alloc_with_raw_backtrace trace (Trace.Timestamp.now ())
                 ~length:info.size
                 ~nsamples:info.n_samples
-                ~is_major:false
+                ~source:Minor
                 ~callstack:info.callstack
         with
         | r -> unlock_tracer s; Some r
@@ -76,7 +76,7 @@ let start ?(report_exn=default_report_exn) ~sampling_rate trace =
         match Trace.Writer.put_alloc_with_raw_backtrace trace (Trace.Timestamp.now ())
                 ~length:info.size
                 ~nsamples:info.n_samples
-                ~is_major:true
+                ~source:Major
                 ~callstack:info.callstack
         with
         | r -> unlock_tracer s; Some r
@@ -136,7 +136,7 @@ let[@inline never] ext_alloc_slowpath ~bytes =
                 (Trace.Timestamp.now ())
                 ~length:size_words
                 ~nsamples:!samples
-                ~is_major:true
+                ~source:External
                 ~callstack)
       with
       | r -> unlock_tracer_ext s; r
