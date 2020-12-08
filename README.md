@@ -19,4 +19,7 @@ occur *after* the program forks, to ensure the right process is
 traced.
 
 The resulting trace files can be analysed with some simple
-command-line tools in bin/. (More viewing tools coming soon!)
+command-line tools in bin/, but the recommended interface is the
+memtrace viewer, which lives at:
+
+    https://github.com/janestreet/memtrace_viewer
