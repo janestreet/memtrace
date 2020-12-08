@@ -1,3 +1,23 @@
+let check_errors () =
+  Unix.putenv "MEMTRACE" "/bad/file/name";
+  (match Memtrace.trace_if_requested () with
+   | _ -> assert false
+   | exception (Unix.Unix_error _) -> ());
+  Unix.putenv "MEMTRACE" "/tmp/goodfilename";
+  (match Memtrace.trace_if_requested ~sampling_rate:(-3.) () with
+   | _ -> assert false
+   | exception (Invalid_argument _) -> ());
+  Unix.putenv "MEMTRACE" "/tmp/goodfilename";
+  Unix.putenv "MEMTRACE_RATE" "42";
+  (match Memtrace.trace_if_requested () with
+   | _ -> assert false
+   | exception (Invalid_argument _) -> ());
+  Unix.putenv "MEMTRACE" "/tmp/goodfilename";
+  Unix.putenv "MEMTRACE_RATE" "potato";
+  (match Memtrace.trace_if_requested () with
+   | _ -> assert false
+   | exception (Invalid_argument _) -> ())
+
 let rec long_bt = function
   | 0 -> (Array.make 1000 0).(42)
   | n ->
@@ -5,7 +25,6 @@ let rec long_bt = function
       1 + long_bt (n-1)
     else
       2 + long_bt (n-1)
-
 
 let go () =
   let filename = Filename.temp_file "memtrace" "ctf" in

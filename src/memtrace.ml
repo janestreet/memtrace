@@ -33,13 +33,18 @@ let trace_if_requested ?context ?sampling_rate () =
   | Some filename ->
      (* Prevent spawned OCaml programs from being traced *)
      Unix.putenv "MEMTRACE" "";
-     let sampling_rate_env =
-       Option.bind (Sys.getenv_opt "MEMTRACE_RATE") float_of_string_opt in
+     let check_rate = function
+       | Some rate when 0. < rate && rate <= 1. -> rate
+       | _ ->
+         raise (Invalid_argument ("Memtrace.trace_if_requested: " ^
+                                  "sampling_rate must be between 0 and 1")) in
      let sampling_rate =
-       match sampling_rate, sampling_rate_env with
-       | None, None -> default_sampling_rate
-       | _, Some v -> v
-       | Some v, None -> v in
+       match sampling_rate with
+       | Some _ -> check_rate sampling_rate
+       | None ->
+         match Sys.getenv_opt "MEMTRACE_RATE" with
+         | None | Some "" -> default_sampling_rate
+         | Some rate -> check_rate (float_of_string_opt rate) in
      let _s = start_tracing ~context ~sampling_rate ~filename in
      ()
 

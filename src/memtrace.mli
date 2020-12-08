@@ -9,7 +9,8 @@
     The sampling rate can also be specified with the MEMTRACE_RATE environment
     variable. If both means are used, the env var takes precedence.
 
-    May raise Unix.Unix_error if the specified file cannot be opened. *)
+    May raise Unix.Unix_error if the specified file cannot be opened, or
+    Invalid_argument if the MEMTRACE_RATE parameter is ill-formed. *)
 val trace_if_requested : ?context:string -> ?sampling_rate:float -> unit -> unit
 
 (** Tracing can also be manually started and stopped. *)
@@ -24,6 +25,8 @@ val start_tracing :
 
 (** Manually stop tracing *)
 val stop_tracing : tracer -> unit
+
+val default_sampling_rate : float
 
 (** Use the Trace module to read and write trace files *)
 module Trace = Trace
