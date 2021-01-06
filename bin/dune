@@ -6,4 +6,12 @@
   memtrace_subsample
   memtrace_hotspots
   memtrace_flamegraph)
+ (modules dump_trace identify subsample hotspots flamegraph)
+ (libraries memtrace))
+
+(ocamllex (modules convert_perf_lexer))
+(executable
+ (name convert_perf)
+ (public_name memtrace_convert_perf)
+ (modules convert_perf convert_perf_lexer)
  (libraries memtrace))
