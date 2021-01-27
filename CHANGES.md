@@ -1,3 +1,7 @@
+## v0.2.1 (2020-01-27)
+
+Packaging fixes.
+
 ## v0.2 (2020-12-08)
 
   - New support for tracing external allocations
