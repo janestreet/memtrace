@@ -1,6 +1,6 @@
 (lang dune 2.3)
 (name memtrace)
-(version 0.2.1)
+(version 0.2.1.1)
 
 (generate_opam_files true)
 

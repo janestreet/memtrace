@@ -1,3 +1,7 @@
+## v0.2.1.1 (2020-02-03)
+
+Fix compilation on 32-bit platforms.
+
 ## v0.2.1 (2020-01-27)
 
 Packaging fixes.
