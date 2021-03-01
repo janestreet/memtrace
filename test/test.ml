@@ -39,6 +39,11 @@ let info : Info.t = {
 }
 
 let events : (int * Event.t) list =
+  let big_length =
+    if Int.max_int > 0x3fff_ffff
+      then int_of_string "0x81234567"
+      else 0x31234567
+  in
   [ 0, Alloc {obj_id = id 0;
               length = 42;
               nsamples = 1;
@@ -54,7 +59,7 @@ let events : (int * Event.t) list =
               backtrace_length = 3;
               common_prefix = 2};
     100, Alloc {obj_id = id 2;
-              length = 0x81234567;
+              length = big_length;
               nsamples = 1;
               source = Minor;
               backtrace_buffer = [| loc 0; loc 1; loc 2 |];

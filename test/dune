@@ -42,8 +42,14 @@
 ; It will fail whenever the binary format changes.
 ; If you changed the format on purpose, just copy ocamlopt.ctf.copy to ocamlopt.ctf
 
+; Note that we don't guarantee that a 32-bit build can read a capture from a
+; 64-bit build. In particular, >32-bit object identifiers get truncated. Thus we
+; don't expect bit-for-bit accuracy on 32-bit systems. We still do the textual
+; diff above to be sure that readers and writers are consistent.
+
 (rule
  (alias runtest)
+ (enabled_if (= 64 %{ocaml-config:word_size}))
  (deps ocamlopt.ctf ocamlopt.ctf.copy)
  (action (run cmp ocamlopt.ctf ocamlopt.ctf.copy)))
 

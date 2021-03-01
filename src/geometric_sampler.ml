@@ -18,7 +18,7 @@ let make ?(rand = default_rand ()) ~sampling_rate () =
    error introduced by the original approximation *)
 
 let log_approx n =
-  let f = Int64.bits_of_float (float_of_int ((n lsl 1) + 1)) in
+  let f = Int64.bits_of_float (Int32.(to_float (add one (shift_left n 1)))) in
   let exp = Int64.(to_int (shift_right f 52)) in
   let exp = float_of_int (exp + (127 - 1023 + 1)) in
   let x = Int64.(float_of_bits (logor (logand f 0xfffffffffffffL) 0x3ff0000000000000L)) in
@@ -31,4 +31,6 @@ let log_approx n =
    (3) Scale the distribution of (2) to have the correct mean by multiplying
    (4) Convert to a geometric distribution by taking the floor + 1 *)
 let draw s =
-  1 + int_of_float (log_approx (Random.State.bits s.rand) *. s.one_log1m_lambda)
+  let uniform_rand = Int32.of_int (Random.State.bits s.rand) in
+  let exp_rand = log_approx uniform_rand in
+  1 + int_of_float (exp_rand *. s.one_log1m_lambda)
