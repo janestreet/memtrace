@@ -79,7 +79,7 @@ end
 
 module Loc_tbl = Hashtbl.Make (struct
   type t = Location_code.t
-  let hash (x : Location_code.t) = ((x :> int) * 1341797927) lsr 17
+  let hash (x : Location_code.t) = ((x :> int) * 218854569) lsr 17
   let equal (x : Location_code.t) (y : Location_code.t) = (x = y)
 end)
 
@@ -109,7 +109,7 @@ and func = {
 
 module Func_tbl = Hashtbl.Make (struct
   type t = func
-  let hash (f : func) = f.id * 49032809481
+  let hash (f : func) = f.id * 21089245
   let equal (f : func) (g : func) = f.id = g.id
 end)
 
