@@ -18,7 +18,13 @@ let start_tracing ~context ~sampling_rate ~filename =
       raise (Invalid_argument ("Cannot lock memtrace file " ^ filename ^
                                ": is another process using it?"))
   end;
-  Unix.ftruncate fd 0;
+  begin
+    try Unix.ftruncate fd 0
+    with Unix.Unix_error _ ->
+      (* On special files (e.g. /dev/null), ftruncate fails. Ignoring errors
+         here gives us the truncate-if-a-regular-file behaviour of O_TRUNC. *)
+      ()
+  end;
   let info : Trace.Info.t =
     { sample_rate = sampling_rate;
       word_size = Sys.word_size;
