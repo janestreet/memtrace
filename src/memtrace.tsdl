@@ -219,7 +219,7 @@ typealias struct {
   } v;
 } := backtrace_code;
 
-enum allocation_source : uint8 { MINOR=0, MAJOR=1, EXTERNAL=2 }
+typealias enum : uint8 { MINOR=0, MAJOR=1, EXTERNAL=2 } := allocation_source;
 
 event {
   id = 2;
