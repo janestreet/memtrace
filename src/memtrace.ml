@@ -5,7 +5,20 @@ let getpid64 () = Int64.of_int (Unix.getpid ())
 let start_tracing ~context ~sampling_rate ~filename =
   if Memprof_tracer.active_tracer () <> None then
     failwith "Only one Memtrace instance may be active at a time";
-  let fd = Unix.openfile filename Unix.[O_CREAT;O_WRONLY;O_TRUNC] 0o600 in
+  let fd =
+    try Unix.openfile filename Unix.[O_CREAT;O_WRONLY] 0o600
+    with Unix.Unix_error (err, _, _) ->
+      raise (Invalid_argument ("Cannot open memtrace file " ^ filename ^
+                               ": " ^ Unix.error_message err))
+  in
+  begin
+    try Unix.lockf fd F_TLOCK 0
+    with Unix.Unix_error _ ->
+      Unix.close fd;
+      raise (Invalid_argument ("Cannot lock memtrace file " ^ filename ^
+                               ": is another process using it?"))
+  end;
+  Unix.ftruncate fd 0;
   let info : Trace.Info.t =
     { sample_rate = sampling_rate;
       word_size = Sys.word_size;
