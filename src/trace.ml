@@ -279,6 +279,7 @@ let get_trace_info b ~packet_info =
 
 type writer = {
   dest : Unix.file_descr;
+  pid : int64;
   getpid : unit -> int64;
   loc_writer : Location_codec.Writer.t;
   cache : Backtrace_codec.Writer.t;
@@ -327,6 +328,7 @@ let make_writer dest ?getpid (info : Info.t) =
       None in
   let s =
     { dest;
+      pid = getpid ();
       getpid;
       loc_writer = Location_codec.Writer.create ();
       new_locs = [| |];
@@ -419,8 +421,12 @@ let log_new_loc s loc =
   end
 
 (** Flushing *)
+exception Pid_changed
 
 let flush_at s ~now =
+  (* If the PID has changed, then the process forked and we're in the subprocess.
+     Don't write anything to the file, and raise an exception to quit tracing *)
+  if s.pid <> s.getpid () then raise Pid_changed;
   let open Write in
   (* First, flush newly-seen locations.
      These must be emitted before any events that might refer to them *)
@@ -738,6 +744,8 @@ let iter s ?(parse_backtraces=true) f =
 
 module Writer = struct
   type t = writer
+
+  exception Pid_changed = Pid_changed
 
   let create = make_writer
 

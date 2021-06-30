@@ -50,10 +50,16 @@ let[@inline never] mark_failed s e =
   s.report_exn e
 
 let default_report_exn e =
-  let msg = Printf.sprintf "Memtrace failure: %s\n" (Printexc.to_string e) in
-  output_string stderr msg;
-  Printexc.print_backtrace stderr;
-  flush stderr
+  match e with
+  | Trace.Writer.Pid_changed ->
+     (* This error is silently ignored, so that if Memtrace is active across
+        Unix.fork () then the child process silently stops tracing *)
+     ()
+  | e ->
+     let msg = Printf.sprintf "Memtrace failure: %s\n" (Printexc.to_string e) in
+     output_string stderr msg;
+     Printexc.print_backtrace stderr;
+     flush stderr
 
 let start ?(report_exn=default_report_exn) ~sampling_rate trace =
   let ext_sampler = Geometric_sampler.make ~sampling_rate () in
@@ -110,8 +116,9 @@ let stop s =
   if not s.stopped then begin
     s.stopped <- true;
     Gc.Memprof.stop ();
-    if lock_tracer s then
-      Trace.Writer.close s.trace;
+    if lock_tracer s then begin
+      try Trace.Writer.close s.trace with e -> mark_failed s e
+    end;
     curr_active_tracer := None
   end
 

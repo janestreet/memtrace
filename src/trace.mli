@@ -108,10 +108,12 @@ end
 (** Writing traces *)
 module Writer : sig
   type t
+  exception Pid_changed
   val create : Unix.file_descr -> ?getpid:(unit -> int64) -> Info.t -> t
 
   (** All of the functions below may raise Unix_error if
-      writing to the file descriptor fails *)
+      writing to the file descriptor fails, or Pid_changed
+      if getpid returns a different value. *)
 
   val put_alloc :
     t
