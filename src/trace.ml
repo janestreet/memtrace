@@ -75,7 +75,7 @@ type ctf_header_offsets =
     off_alloc_begin : Write.position_64;
     off_alloc_end : Write.position_64 }
 
-let put_ctf_header b getpid cache =
+let put_ctf_header b pid cache =
   let open Write in
   put_32 b 0xc1fc1fc1l;
   let off_packet_size = skip_32 b in
@@ -83,7 +83,7 @@ let put_ctf_header b getpid cache =
   let off_timestamp_end = skip_64 b in
   let off_flush_duration = skip_32 b in
   put_16 b memtrace_version;
-  put_64 b (getpid ());
+  put_64 b pid;
   begin match cache with
   | Some c -> Backtrace_codec.Writer.put_cache_verifier c b
   | None -> Backtrace_codec.Writer.put_dummy_verifier b
@@ -279,6 +279,7 @@ let get_trace_info b ~packet_info =
 
 type writer = {
   dest : Unix.file_descr;
+  pid : int64;
   getpid : unit -> int64;
   loc_writer : Location_codec.Writer.t;
   cache : Backtrace_codec.Writer.t;
@@ -305,10 +306,11 @@ let make_writer dest ?getpid (info : Info.t) =
   let getpid = match getpid with
     | Some getpid -> getpid
     | None -> fun () -> info.pid in
+  let pid = getpid () in
   let packet = Write.of_bytes (Bytes.make max_packet_size '\042') in
   begin
     (* Write the trace info packet *)
-    let hdr = put_ctf_header packet getpid None in
+    let hdr = put_ctf_header packet pid None in
     put_trace_info packet info;
     finish_ctf_header hdr packet
       ~timestamp_begin:info.start_time
@@ -318,7 +320,7 @@ let make_writer dest ?getpid (info : Info.t) =
     write_fd dest packet;
   end;
   let packet = Write.of_bytes packet.buf in
-  let packet_header = put_ctf_header packet getpid None in
+  let packet_header = put_ctf_header packet pid None in
   let cache = Backtrace_codec.Writer.create () in
   let debug_reader_cache =
     if cache_enable_debug then
@@ -327,6 +329,7 @@ let make_writer dest ?getpid (info : Info.t) =
       None in
   let s =
     { dest;
+      pid;
       getpid;
       loc_writer = Location_codec.Writer.create ();
       new_locs = [| |];
@@ -419,15 +422,19 @@ let log_new_loc s loc =
   end
 
 (** Flushing *)
+exception Pid_changed
 
 let flush_at s ~now =
+  (* If the PID has changed, then the process forked and we're in the subprocess.
+     Don't write anything to the file, and raise an exception to quit tracing *)
+  if s.pid <> s.getpid () then raise Pid_changed;
   let open Write in
   (* First, flush newly-seen locations.
      These must be emitted before any events that might refer to them *)
   let i = ref 0 in
   while !i < s.new_locs_len do
     let b = Write.of_bytes s.new_locs_buf in
-    let hdr = put_ctf_header b s.getpid None in
+    let hdr = put_ctf_header b s.pid None in
     while !i < s.new_locs_len
           && remaining b > Location_codec.Writer.max_length do
       put_event_header b Ev_location s.packet_time_start;
@@ -454,7 +461,7 @@ let flush_at s ~now =
   s.new_locs_len <- 0;
   s.packet <- Write.of_bytes s.packet.buf;
   s.start_alloc_id <- s.next_alloc_id;
-  s.packet_header <- put_ctf_header s.packet s.getpid (Some s.cache)
+  s.packet_header <- put_ctf_header s.packet s.pid (Some s.cache)
 
 let max_ev_size =
   100 (* upper bound on fixed-size portion of events
@@ -738,6 +745,8 @@ let iter s ?(parse_backtraces=true) f =
 
 module Writer = struct
   type t = writer
+
+  exception Pid_changed = Pid_changed
 
   let create = make_writer
 

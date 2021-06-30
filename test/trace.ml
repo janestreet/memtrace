@@ -2,7 +2,7 @@ let check_errors () =
   Unix.putenv "MEMTRACE" "/bad/file/name";
   (match Memtrace.trace_if_requested () with
    | _ -> assert false
-   | exception (Unix.Unix_error _) -> ());
+   | exception (Invalid_argument _) -> ());
   Unix.putenv "MEMTRACE" "/tmp/goodfilename";
   (match Memtrace.trace_if_requested ~sampling_rate:(-3.) () with
    | _ -> assert false
@@ -17,6 +17,8 @@ let check_errors () =
   (match Memtrace.trace_if_requested () with
    | _ -> assert false
    | exception (Invalid_argument _) -> ())
+
+let () = check_errors ()
 
 let rec long_bt = function
   | 0 -> (Array.make 1000 0).(42)
@@ -69,7 +71,6 @@ let go () =
   assert (650 <= !ext_samples && !ext_samples < 750);
   assert (not !first);
   assert (!n_long = 10)
-
 
 let () =
   go (); go ()
