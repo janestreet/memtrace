@@ -6,4 +6,10 @@
   memtrace_subsample
   memtrace_hotspots
   memtrace_flamegraph)
+ (modules (:standard \ maketrace))
  (libraries memtrace))
+
+(executable
+ (name maketrace)
+ (modules maketrace)
+ (libraries memtrace yojson))
