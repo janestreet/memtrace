@@ -20,8 +20,16 @@ let check_errors () =
 
 let () = check_errors ()
 
+let globs = Array.make 1000 [| |]
+let nglobs = ref 0
+let leak x = globs.(!nglobs) <- x; incr nglobs
+
 let rec long_bt = function
-  | 0 -> (Array.make 1000 0).(42)
+  | 0 ->
+     leak (Array.make 1000 0);
+     (Sys.opaque_identity List.iter) (fun () ->
+       leak (Array.make 1000 0)) [()];
+     42
   | n ->
     if Random.bool () then
       1 + long_bt (n-1)
@@ -30,9 +38,8 @@ let rec long_bt = function
 
 let go () =
   let filename = Filename.temp_file "memtrace" "ctf" in
-  let r = ref [| |] in
   let t = Memtrace.start_tracing ~context:(Some "ctx") ~sampling_rate:0.1 ~filename in
-  r := Array.make 4242 42;
+  leak (Array.make 4242 42);
   for _i = 1 to 10 do
     let n = long_bt 10_000 in
     assert (n > 0);
@@ -70,7 +77,7 @@ let go () =
   Unix.unlink filename;
   assert (650 <= !ext_samples && !ext_samples < 750);
   assert (not !first);
-  assert (!n_long = 10)
+  assert (!n_long = 20)
 
 let () =
   go (); go ()

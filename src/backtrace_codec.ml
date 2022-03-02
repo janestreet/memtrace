@@ -116,12 +116,14 @@ module Reader = struct
     cache_loc : int array;
     cache_pred : int array;
     mutable last_backtrace : int array;
+    mutable last_backtrace_len : int;
   }
 
   let create () =
     { cache_loc = Array.make cache_size 0;
       cache_pred = Array.make cache_size 0;
-      last_backtrace = [| |] }
+      last_backtrace = [| |];
+      last_backtrace_len = 0; }
 
   let[@inline never] realloc_bbuf bbuf pos (x : int) =
     assert (pos = Array.length bbuf);
@@ -139,7 +141,6 @@ module Reader = struct
       realloc_bbuf bbuf pos x
 
   let get_backtrace ({ cache_loc ; cache_pred; _ } as cache) b ~nencoded ~common_pfx_len =
-    assert (common_pfx_len <= Array.length cache.last_backtrace);
     let rec decode pred bbuf pos = function
       | 0 -> (bbuf, pos)
       | i ->
@@ -173,9 +174,19 @@ module Reader = struct
         let pred' = cache_pred.(pred) in
         let bbuf = put_bbuf bbuf pos cache_loc.(pred') in
         predict pred' bbuf (pos + 1) i (n-1) in
-    let (bbuf, pos) = decode 0 cache.last_backtrace common_pfx_len nencoded in
-    cache.last_backtrace <- bbuf;
-    (bbuf, pos)
+    if common_pfx_len <= cache.last_backtrace_len then begin
+      let (bbuf, pos) = decode 0 cache.last_backtrace common_pfx_len nencoded in
+      cache.last_backtrace <- bbuf;
+      cache.last_backtrace_len <- pos;
+      (bbuf, pos)
+    end else begin
+      (* This can occur if the last backtrace was truncated, and the current
+         backtrace shares a long prefix with it. Return the amount of backtrace
+         that we have. (We still go through the motions of decoding to ensure
+         that the location cache is updated correctly) *)
+      let (_bbuf, _pos) = decode 0 [| |] 0 nencoded in
+      (cache.last_backtrace, cache.last_backtrace_len)
+    end
 
   let skip_backtrace _cache b ~nencoded ~common_pfx_len:_ =
     for _ = 1 to nencoded do
