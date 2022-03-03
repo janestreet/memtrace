@@ -1,3 +1,12 @@
+## v0.2.2 (2021-03-03)
+
+  - Don't write to trace file from forked child process (avoids
+    corruption from concurrent writers)
+
+  - Fix a TSDL syntax error
+
+  - Bug fixes
+
 ## v0.2.1.2 (2020-03-08)
 
 More fixes for 32-bit platforms.
