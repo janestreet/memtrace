@@ -31,9 +31,18 @@ module Write = struct
     write_fully fd b.buf 0 b.pos
 
   let put_raw_8 b i v = Bytes.unsafe_set b i (Char.unsafe_chr v)
-  external put_raw_16 : Bytes.t -> int -> int -> unit = "%caml_bytes_set16u"
-  external put_raw_32 : Bytes.t -> int -> int32 -> unit = "%caml_bytes_set32u"
-  external put_raw_64 : Bytes.t -> int -> int64 -> unit = "%caml_bytes_set64u"
+  external put_raw_16_ne : Bytes.t -> int -> int -> unit = "%caml_bytes_set16u"
+  external put_raw_32_ne : Bytes.t -> int -> int32 -> unit = "%caml_bytes_set32u"
+  external put_raw_64_ne : Bytes.t -> int -> int64 -> unit = "%caml_bytes_set64u"
+
+  let[@inline always] put_raw_16_le buf pos v =
+    put_raw_16_ne buf pos (if Sys.big_endian then bswap_16 v else v)
+
+  let[@inline always] put_raw_32_le buf pos v =
+    put_raw_32_ne buf pos (if Sys.big_endian then bswap_32 v else v)
+
+  let[@inline always] put_raw_64_le buf pos v =
+    put_raw_64_ne buf pos (if Sys.big_endian then bswap_64 v else v)
 
   exception Overflow of int
   let[@inline never] overflow b = Overflow b.pos
@@ -49,21 +58,21 @@ module Write = struct
     let pos = b.pos in
     let pos' = b.pos + 2 in
     if pos' > b.pos_end then raise (overflow b) else
-      (put_raw_16 b.buf pos (if Sys.big_endian then bswap_16 v else v);
+      (put_raw_16_le b.buf pos v;
        b.pos <- pos')
 
   let[@inline always] put_32 b v =
     let pos = b.pos in
     let pos' = b.pos + 4 in
     if pos' > b.pos_end then raise (overflow b) else
-      (put_raw_32 b.buf pos (if Sys.big_endian then bswap_32 v else v);
+      (put_raw_32_le b.buf pos v;
        b.pos <- pos')
 
   let[@inline always] put_64 b v =
     let pos = b.pos in
     let pos' = b.pos + 8 in
     if pos' > b.pos_end then raise (overflow b) else
-      (put_raw_64 b.buf pos (if Sys.big_endian then bswap_64 v else v);
+      (put_raw_64_le b.buf pos v;
        b.pos <- pos')
 
   let[@inline always] put_float b f =
@@ -135,15 +144,15 @@ module Write = struct
 
   let update_16 b pos v =
     assert (pos + 2 <= b.pos_end);
-    put_raw_16 b.buf pos v
+    put_raw_16_le b.buf pos v
 
   let update_32 b pos v =
     assert (pos + 4 <= b.pos_end);
-    put_raw_32 b.buf pos v
+    put_raw_32_le b.buf pos v
 
   let update_64 b pos v =
     assert (pos + 8 <= b.pos_end);
-    put_raw_64 b.buf pos v
+    put_raw_64_le b.buf pos v
 
   let update_float b pos f =
     update_64 b pos (Int64.bits_of_float f)
@@ -180,9 +189,18 @@ module Read = struct
 
   let empty = { buf = Bytes.make 0 '?'; pos = 0; pos_end = 0 }
 
-  external get_raw_16 : Bytes.t -> int -> int = "%caml_bytes_get16u"
-  external get_raw_32 : Bytes.t -> int -> int32 = "%caml_bytes_get32u"
-  external get_raw_64 : Bytes.t -> int -> int64 = "%caml_bytes_get64u"
+  external get_raw_16_ne : Bytes.t -> int -> int = "%caml_bytes_get16u"
+  external get_raw_32_ne : Bytes.t -> int -> int32 = "%caml_bytes_get32u"
+  external get_raw_64_ne : Bytes.t -> int -> int64 = "%caml_bytes_get64u"
+
+  let[@inline always] get_raw_16_le buf pos =
+    if Sys.big_endian then bswap_16 (get_raw_16_ne buf pos) else get_raw_16_ne buf pos
+
+  let[@inline always] get_raw_32_le buf pos =
+    if Sys.big_endian then bswap_32 (get_raw_32_ne buf pos) else get_raw_32_ne buf pos
+
+  let[@inline always] get_raw_64_le buf pos =
+    if Sys.big_endian then bswap_64 (get_raw_64_ne buf pos) else get_raw_64_ne buf pos
 
   exception Underflow of int
   let[@inline never] underflow b = Underflow b.pos
@@ -199,21 +217,21 @@ module Read = struct
     let pos' = b.pos + 2 in
     if pos' > b.pos_end then raise (underflow b);
     b.pos <- pos';
-    if Sys.big_endian then bswap_16 (get_raw_16 b.buf pos) else get_raw_16 b.buf pos
+    get_raw_16_le b.buf pos
 
   let[@inline always] get_32 b =
     let pos = b.pos in
     let pos' = b.pos + 4 in
     if pos' > b.pos_end then raise (underflow b);
     b.pos <- pos';
-    if Sys.big_endian then bswap_32 (get_raw_32 b.buf pos) else get_raw_32 b.buf pos
+    get_raw_32_le b.buf pos
 
   let[@inline always] get_64 b =
     let pos = b.pos in
     let pos' = b.pos + 8 in
     if pos' > b.pos_end then raise (underflow b);
     b.pos <- pos';
-    if Sys.big_endian then bswap_64 (get_raw_64 b.buf pos) else get_raw_64 b.buf pos
+    get_raw_64_le b.buf pos
 
   let[@inline always] get_float b =
     Int64.float_of_bits (get_64 b)
