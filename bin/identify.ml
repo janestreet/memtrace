@@ -25,7 +25,7 @@ let identify filename =
   let info = Reader.info trace in
   Printf.printf "Trace file %s (%a)\n"
     filename print_bytes (Int64.to_float (Reader.size_bytes trace));
-  let start_time = Timestamp.to_int64 info.start_time in
+  let start_time = Timestamp.to_int64_us_since_epoch info.start_time in
   let tm : Unix.tm = Unix.gmtime (Int64.to_float start_time *. 1e-6) in
   let days = [| "Sun"; "Mon"; "Tue"; "Wed"; "Thu"; "Fri"; "Sat" |] in
   let months = [| "Jan"; "Feb"; "Mar"; "Apr"; "May"; "Jun"; "Jul"; "Aug"; "Sep"; "Oct"; "Nov"; "Dec" |] in
@@ -81,7 +81,8 @@ let identify filename =
            | n -> Obj_id.Tbl.remove major_live_multisampled id; n
            | exception Not_found -> 1 in
          major_collect := !major_collect + nsamples
-       end);
+       end
+    | Gc_event _ -> ());
   let duration = Int64.to_float !tmax *. 1e-6 in
   let bytes nsamples =
     float_of_int nsamples /. info.sample_rate *. float_of_int (info.word_size / 8) in

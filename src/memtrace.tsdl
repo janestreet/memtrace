@@ -266,6 +266,44 @@ event {
   };
 };
 
+/* Event 5: GC event.
+
+  For GC events, we need to include their kind, and beginning and end timestamps.
+  Since GC events aren't reported as they happen, but instead loaded on the next sampling,
+  those may differ from the event timestamp.
+*/
+
+enum gc_phase : uint8 {
+  mark,
+  sweep,
+  clean,
+  idle,
+}
+
+enum gc_event_kind : uint8 {
+  test,
+  minor,
+  major_slice,
+  finalise,
+};
+
+event {
+  id = 5;
+  name = "gc_event";
+  fields := struct {
+    clk64 begin;
+    clk64 end;
+    variant <gc_event_kind> event_data {
+      struct {
+        vint remembered_set_size;
+      } minor;
+      struct {
+        float64 extra_heap_resources;
+        gc_phase phase;
+      };
+    };
+  };
+};
 
 /* Events 101-116. Allocations (short format)
 

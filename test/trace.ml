@@ -38,7 +38,9 @@ let rec long_bt = function
 
 let go () =
   let filename = Filename.temp_file "memtrace" "ctf" in
-  let t = Memtrace.start_tracing ~context:(Some "ctx") ~sampling_rate:0.1 ~filename in
+  let t = Memtrace.start_tracing_with_gc_events ~context:"ctx" ~sampling_rate:0.1 ~filename () in
+  Gc_recent_events.For_testing.write_test_event ();
+  Gc_recent_events.For_testing.write_test_event ();
   leak (Array.make 4242 42);
   for _i = 1 to 10 do
     let n = long_bt 10_000 in
@@ -54,6 +56,7 @@ let go () =
   let n_long = ref 0 in
   let last_ext = ref None in
   let ext_samples = ref 0 in
+  let gc_events = ref 0 in
   Memtrace.Trace.Reader.iter r (fun _ ev ->
     match ev with
     | Alloc info when !first ->
@@ -70,6 +73,9 @@ let go () =
     | Collect id ->
       assert (!last_ext = Some id);
       last_ext := None
+    | Gc_event e ->
+      assert (e.data = Test);
+      incr gc_events
     | e ->
       failwith ("unexpected " ^ (Memtrace.Trace.Event.to_string
                                    (Memtrace.Trace.Reader.lookup_location_code r) e)));
@@ -77,7 +83,35 @@ let go () =
   Unix.unlink filename;
   assert (650 <= !ext_samples && !ext_samples < 750);
   assert (not !first);
-  assert (!n_long = 20)
+  assert (!n_long = 20);
+  assert (!gc_events = 2)
+
+let gc_event_test () =
+  let filename = Filename.temp_file "memtrace" "ctf" in
+  let t = Memtrace.start_tracing_with_gc_events ~context:"ctx" ~sampling_rate:0.1 ~filename () in
+  let xs = List.init 10000 (fun x -> x + 1) in
+  let s = List.fold_left (+) 0 xs in
+  Gc.minor ();
+  Gc.major ();
+  Memtrace.stop_tracing t;
+  assert (s = 50005000);
+  let has_minor = ref false in
+  let has_major = ref false in
+  let r = Memtrace.Trace.Reader.open_ ~filename in
+  Memtrace.Trace.Reader.iter r (fun _ ev ->
+    match ev with
+    | Gc_event { data; begin_; end_ } ->
+      assert (begin_ <= end_);
+      (match data with
+      | Minor _ -> has_minor := true
+      | Major_slice _ ->
+        assert (!has_minor);
+        has_major := true
+      | _ -> ())
+    | _ -> ());
+  assert (!has_major)
+
 
 let () =
-  go (); go ()
+  go (); go ();
+  gc_event_test ()

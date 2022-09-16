@@ -23,6 +23,21 @@ val start_tracing :
   filename:string ->
   tracer
 
+(* CR-soon dkalinichenko: temporary fix before we figure out
+   what to do with existing [start_tracing] callers. *)
+
+(* CR-soon lmaurer for lmaurer: Do the tree smash to add a unit argument to
+   [start_tracing]. *)
+
+(** Start tracing and possibly record GC events *)
+val start_tracing_with_gc_events :
+  ?record_gc_events:bool ->
+  ?context:string ->
+  sampling_rate:float ->
+  filename:string ->
+  unit ->
+  tracer
+
 (** Manually stop tracing *)
 val stop_tracing : tracer -> unit
 

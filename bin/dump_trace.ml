@@ -23,7 +23,9 @@ let dump filename =
   | Promote id ->
     Printf.printf "%010d promote\n" (id :> int)
   | Collect id ->
-    Printf.printf "%010d collect\n" (id :> int));
+    Printf.printf "%010d collect\n" (id :> int)
+  | Gc_event e ->
+    Printf.printf "%s gc_event" (Memtrace.Trace.Gc_event.to_string e));
   Reader.close trace
 
 

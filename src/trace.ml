@@ -25,28 +25,76 @@ let check_fmt s b = if not b then bad_format s
 
 (* Utility types *)
 
-(* Time since the epoch *)
-module Timestamp = struct
-  type t = int64
-
-  let of_int64 t = t
-  let to_int64 t = t
-
-  let to_float t =
-    (Int64.to_float t) /. 1_000_000.
-
-  let of_float f =
-    f *. 1_000_000. |> Int64.of_float
-
-  let now () = of_float (Unix.gettimeofday ())
-end
+module Timestamp = Gc_recent_events.Timestamp
 
 (* Time since the start of the trace *)
 module Timedelta = struct
   type t = int64
 
   let to_int64 t = t
-  let offset = Int64.add
+  let offset ts td =
+    Int64.add (Timestamp.to_int64_us_since_epoch ts) td
+    |> Timestamp.of_int64_us_since_epoch
+  let delta ts' ts =
+    let ts'_us = Timestamp.to_int64_us_since_epoch ts' in
+    let ts_us = Timestamp.to_int64_us_since_epoch ts in
+    Int64.(sub ts'_us ts_us)
+end
+
+
+module Gc_event = struct
+  type t = {
+    data : Gc_recent_events.Event_data.t;
+    begin_ : Timedelta.t;
+    end_ : Timedelta.t
+  }
+
+  let encode_phase = function
+    | Gc_recent_events.Major_slice_data.Phase.Mark -> 0
+    | Sweep -> 1
+    | Clean -> 2
+    | Idle -> 3
+    
+  let decode_phase_exn = function
+    | 0 -> Gc_recent_events.Major_slice_data.Phase.Mark
+    | 1 -> Sweep
+    | 2 -> Clean
+    | 3 -> Idle
+    | n -> bad_formatf "unknown gc phase code %d" n
+
+  let phase_to_string = function
+    | Gc_recent_events.Major_slice_data.Phase.Mark -> "mark"
+    | Sweep -> "sweep"
+    | Clean -> "clean"
+    | Idle -> "idle"
+
+  let to_string t =
+    let ev_data_descr =
+      match t.data with
+      | Test -> "test"
+      | Minor data ->
+        Printf.sprintf
+          "rememembered_set_size=%d"
+          data.remembered_set_size
+      | Major_slice data ->
+        Printf.sprintf
+          "phase=%s extra_heap_resources=%f"
+          (phase_to_string data.gc_phase)
+          data.extra_heap_resources
+      | Finalise -> "finalise"
+    in
+    Printf.sprintf "[%s] begin=%Ld end=%Ld\n"
+      ev_data_descr
+      t.begin_
+      t.end_
+
+  let of_timestamped
+    { Gc_recent_events.Event.data; begin_; end_; }
+    ~(start_time : Timestamp.t) : t =
+    let begin_us = Timestamp.to_int64_us_since_epoch begin_ in
+    let end_us = Timestamp.to_int64_us_since_epoch end_ in
+    let start_time_us = Timestamp.to_int64_us_since_epoch start_time in
+    { data; begin_ = Int64.(sub begin_us start_time_us); end_ = Int64.(sub end_us start_time_us) }
 end
 
 (** CTF packet headers *)
@@ -144,8 +192,8 @@ let get_ctf_header b rcache =
   let header_size = b.pos - start in
   {
     content_size = Int32.(to_int (div packet_size 8l) - header_size);
-    time_begin;
-    time_end;
+    time_begin = Timestamp.of_int64_us_since_epoch time_begin;
+    time_end = Timestamp.of_int64_us_since_epoch time_end;
     alloc_id_begin;
     alloc_id_end;
     pid;
@@ -161,6 +209,7 @@ type evcode =
   | Ev_alloc
   | Ev_promote
   | Ev_collect
+  | Ev_gc_event
   | Ev_short_alloc of int
 let event_code = function
   | Ev_trace_info -> 0
@@ -168,6 +217,7 @@ let event_code = function
   | Ev_alloc -> 2
   | Ev_promote -> 3
   | Ev_collect -> 4
+  | Ev_gc_event -> 5
   | Ev_short_alloc n ->
      assert (1 <= n && n <= 16);
      100 + n
@@ -177,6 +227,7 @@ let event_of_code = function
   | 2 -> Ev_alloc
   | 3 -> Ev_promote
   | 4 -> Ev_collect
+  | 5 -> Ev_gc_event
   | n when 101 <= n && n <= 116 ->
      Ev_short_alloc (n - 100)
   | c -> bad_format ("Unknown event code " ^ string_of_int c)
@@ -199,7 +250,8 @@ let[@inline] get_event_header info b =
   let open Read in
   let code = get_32 b in
   let start_low =
-    Int32.logand event_header_time_mask (Int64.to_int32 info.time_begin)
+    Int32.logand event_header_time_mask
+      (Int64.to_int32 (Timestamp.to_int64_us_since_epoch (info.time_begin)))
   in
   let time_low = Int32.logand event_header_time_mask code in
   let time_low =
@@ -208,12 +260,14 @@ let[@inline] get_event_header info b =
       Int32.(add time_low (of_int (1 lsl event_header_time_len)))
     else
       time_low in
+  let time_begin_us = Timestamp.to_int64_us_since_epoch info.time_begin in
+  let time_end_us = Timestamp.to_int64_us_since_epoch info.time_end in
   let time =
-    Int64.(add (logand info.time_begin
+    Int64.(add (logand time_begin_us
                   (lognot (of_int32 event_header_time_mask)))
              (of_int32 time_low)) in
   check_fmt "time in packet bounds"
-    (info.time_begin <= time && time <= info.time_end);
+    (time_begin_us <= time && time <= time_end_us);
   let ev = event_of_code (Int32.(to_int (shift_right_logical code
                                            event_header_time_len))) in
   (ev, time)
@@ -239,7 +293,8 @@ end
 
 let put_trace_info b (info : Info.t) =
   let open Write in
-  put_event_header b Ev_trace_info info.start_time;
+  put_event_header b Ev_trace_info
+    (Timestamp.to_int64_us_since_epoch info.start_time);
   put_float b info.sample_rate;
   put_8 b info.word_size;
   put_string b info.executable_name;
@@ -308,13 +363,14 @@ let make_writer dest ?getpid (info : Info.t) =
     | None -> fun () -> info.pid in
   let pid = getpid () in
   let packet = Write.of_bytes (Bytes.make max_packet_size '\042') in
+  let start_time_us = Timestamp.to_int64_us_since_epoch info.start_time in
   begin
     (* Write the trace info packet *)
     let hdr = put_ctf_header packet pid None in
     put_trace_info packet info;
     finish_ctf_header hdr packet
-      ~timestamp_begin:info.start_time
-      ~timestamp_end:info.start_time
+      ~timestamp_begin:start_time_us
+      ~timestamp_end:start_time_us
       ~alloc_id_begin:0
       ~alloc_id_end:0;
     write_fd dest packet;
@@ -381,6 +437,7 @@ module Event = struct
       }
     | Promote of Obj_id.t
     | Collect of Obj_id.t
+    | Gc_event of Gc_event.t
 
   let to_string decode_loc = function
     | Alloc {obj_id; length; nsamples; source;
@@ -405,6 +462,7 @@ module Event = struct
       Printf.sprintf "%010d promote" (id :> int)
     | Collect id ->
       Printf.sprintf "%010d collect" (id :> int)
+    | Gc_event e -> Printf.sprintf "%s gc_event" (Gc_event.to_string e)
 end
 
 let log_new_loc s loc =
@@ -428,6 +486,8 @@ let flush_at s ~now =
   (* If the PID has changed, then the process forked and we're in the subprocess.
      Don't write anything to the file, and raise an exception to quit tracing *)
   if s.pid <> s.getpid () then raise Pid_changed;
+  let packet_time_start_us = Timestamp.to_int64_us_since_epoch s.packet_time_start in
+  let packet_time_end_us = Timestamp.to_int64_us_since_epoch s.packet_time_end in
   let open Write in
   (* First, flush newly-seen locations.
      These must be emitted before any events that might refer to them *)
@@ -437,21 +497,23 @@ let flush_at s ~now =
     let hdr = put_ctf_header b s.pid None in
     while !i < s.new_locs_len
           && remaining b > Location_codec.Writer.max_length do
-      put_event_header b Ev_location s.packet_time_start;
+      put_event_header b Ev_location packet_time_start_us;
       Location_codec.Writer.put_location s.loc_writer b s.new_locs.(!i);
       incr i
     done;
     finish_ctf_header hdr b
-      ~timestamp_begin:s.packet_time_start
-      ~timestamp_end:s.packet_time_start
+      ~timestamp_begin:packet_time_start_us
+      (* Intentionally pass the start time as the end timestamp,
+         since we aren't passing the actual events yet. *)
+      ~timestamp_end:packet_time_start_us
       ~alloc_id_begin:s.start_alloc_id
       ~alloc_id_end:s.start_alloc_id;
     write_fd s.dest b
   done;
   (* Next, flush the actual events *)
   finish_ctf_header s.packet_header s.packet
-    ~timestamp_begin:s.packet_time_start
-    ~timestamp_end:s.packet_time_end
+    ~timestamp_begin:packet_time_start_us
+    ~timestamp_end:packet_time_end_us
     ~alloc_id_begin:s.start_alloc_id
     ~alloc_id_end:s.next_alloc_id;
   write_fd s.dest s.packet;
@@ -472,10 +534,10 @@ let begin_event s ev ~(now : Timestamp.t) =
   let open Write in
   if remaining s.packet < max_ev_size
      || s.new_locs_len > 128
-     || Int64.(sub now s.packet_time_start > of_int packet_max_time) then
+     || Int64.(Timedelta.delta now s.packet_time_start > of_int packet_max_time) then
     flush_at s ~now;
   s.packet_time_end <- now;
-  put_event_header s.packet ev now
+  put_event_header s.packet ev (Timestamp.to_int64_us_since_epoch now)
 
 let flush s = flush_at s ~now:s.packet_time_end
 
@@ -634,7 +696,47 @@ let get_collect alloc_id b =
   let id = alloc_id - 1 - id_delta in
   Event.Collect id
 
+let put_gc_event s now (e : Gc_event.t) =
+  let open Write in
+  begin_event s Ev_gc_event ~now;
+  let b = s.packet in
+  let start_time_us = Timestamp.to_int64_us_since_epoch s.packet_time_start in
+  put_64 b Int64.(add start_time_us e.begin_);
+  put_64 b Int64.(add start_time_us e.end_);
+  match e.data with
+  | Test -> put_8 b 0
+  | Minor data ->
+    put_8 b 1;
+    put_vint b data.remembered_set_size
+  | Major_slice data ->
+    put_8 b 2;
+    put_float b data.extra_heap_resources;
+    put_8 b (Gc_event.encode_phase data.gc_phase)
+  | Finalise -> put_8 b 3
 
+let put_timestamped_gc_event s now (e : Gc_recent_events.Event.t) =
+  put_gc_event s now (Gc_event.of_timestamped e ~start_time:s.packet_time_start)
+  
+let get_gc_event start_time b =
+  let open Read in
+
+  let begin_ = Int64.sub (get_64 b) start_time in
+  let end_ = Int64.sub (get_64 b) start_time in
+  check_fmt "begin timestamp should precede end" (begin_ <= end_);
+  let data =
+    let code = get_8 b in
+    match code with
+    | 0 -> Gc_recent_events.Event_data.Test
+    | 1 -> 
+      let remembered_set_size = get_vint b in
+      Minor { remembered_set_size }
+    | 2 ->
+      let extra_heap_resources = get_float b in
+      let gc_phase = Gc_event.decode_phase_exn (get_8 b) in
+      Major_slice { extra_heap_resources; gc_phase }
+    | 3 -> Finalise
+    | n -> bad_formatf "unknown gc event code %d" n in
+  Event.Gc_event { data; begin_; end_ }
 
 (** Trace reader *)
 
@@ -656,7 +758,8 @@ let make_reader fd =
   check_fmt "trace info packet size" (remaining b >= packet_info.content_size);
   let ev, evtime = get_event_header packet_info b in
   check_fmt "trace info packet code" (ev = Ev_trace_info);
-  check_fmt "trace info packet time" (evtime = packet_info.time_begin);
+  let time_begin_us = Timestamp.to_int64_us_since_epoch packet_info.time_begin in
+  check_fmt "trace info packet time" (evtime = time_begin_us);
   let trace_info = get_trace_info b ~packet_info in
   check_fmt "trace info packet done" (remaining b = 0);
   let loc_table = Location_code.Tbl.create 20 in
@@ -678,14 +781,15 @@ let iter s ?(parse_backtraces=true) f =
   let open Read in
   let cache = Backtrace_codec.Reader.create () in
   let loc_reader = Location_codec.Reader.create () in
-  let last_timestamp = ref s.info.start_time in
+  let start_time_us = Timestamp.to_int64_us_since_epoch s.info.start_time in
+  let last_timestamp = ref start_time_us in
   let alloc_id = ref 0 in
   let iter_events_of_packet packet_header b =
     while remaining b > 0 do
       let (ev, time) = get_event_header packet_header b in
       check_fmt "monotone timestamps" (!last_timestamp <= time);
       last_timestamp := time;
-      let dt = Int64.(sub time s.info.start_time) in
+      let dt = Int64.(sub time start_time_us) in
       begin match ev with
       | Ev_trace_info ->
          bad_format "Multiple trace-info events present"
@@ -712,6 +816,9 @@ let iter s ?(parse_backtraces=true) f =
         let info = get_promote !alloc_id b in
         (*Printf.printf "%3d " (b.pos - last_pos);*)
         f dt info
+      | Ev_gc_event ->
+        let info = get_gc_event start_time_us b in
+        f dt info
       end
     done;
     check_fmt "alloc id sync"
@@ -726,7 +833,8 @@ let iter s ?(parse_backtraces=true) f =
     in
     let stream = refill_to packet_header.content_size s.fd stream in
     let (packet, rest) = split stream packet_header.content_size in
-    if !last_timestamp <= packet_header.time_begin &&
+    let time_begin_us = Timestamp.to_int64_us_since_epoch packet_header.time_begin in
+    if !last_timestamp <= time_begin_us &&
          !alloc_id = Int64.to_int packet_header.alloc_id_begin then begin
       if packet_header.pid <> s.info.pid then
         report_hack "skipping bad packet (wrong pid: %Ld, but tracing %Ld)"
@@ -787,6 +895,8 @@ module Writer = struct
       ~callstack ~callstack_as_ints:callstack ~decode_callstack_entry
   let put_collect = put_collect
   let put_promote = put_promote
+  let put_gc_event = put_gc_event
+  let put_timestamped_gc_event = put_timestamped_gc_event
   let flush = flush
   let close t = flush t; Unix.close t.dest
 
@@ -806,6 +916,8 @@ module Writer = struct
       put_promote w now id
     | Collect id ->
       put_collect w now id
+    | Gc_event e ->
+      put_gc_event w now e
 end
 
 module Reader = struct

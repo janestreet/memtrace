@@ -2,7 +2,7 @@ type tracer = Memprof_tracer.t
 
 let getpid64 () = Int64.of_int (Unix.getpid ())
 
-let start_tracing ~context ~sampling_rate ~filename =
+let start_tracing_with_gc_events ?(record_gc_events=true) ?context ~sampling_rate ~filename () =
   if Memprof_tracer.active_tracer () <> None then
     failwith "Only one Memtrace instance may be active at a time";
   let fd =
@@ -36,7 +36,10 @@ let start_tracing ~context ~sampling_rate ~filename =
       context;
     } in
   let trace = Trace.Writer.create fd ~getpid:getpid64 info in
-  Memprof_tracer.start ~sampling_rate trace
+  Memprof_tracer.start ~record_gc_events ~sampling_rate trace
+
+let start_tracing ~context ~sampling_rate ~filename =
+  start_tracing_with_gc_events ~record_gc_events:false ?context ~sampling_rate ~filename ()
 
 let stop_tracing t =
   Memprof_tracer.stop t

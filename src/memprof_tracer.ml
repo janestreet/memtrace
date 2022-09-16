@@ -3,6 +3,7 @@ type t =
     mutable locked_ext : bool;
     mutable failed : bool;
     mutable stopped : bool;
+    record_gc_events : bool;
     report_exn : exn -> unit;
     trace : Trace.Writer.t;
     ext_sampler : Geometric_sampler.t; }
@@ -61,51 +62,59 @@ let default_report_exn e =
      Printexc.print_backtrace stderr;
      flush stderr
 
-let start ?(report_exn=default_report_exn) ~sampling_rate trace =
+let process_event s ~(f : unit -> 'a) : 'a option =
+  if lock_tracer s then
+    try
+      if s.record_gc_events then
+        Gc_recent_events.iter_pending
+          ~f:(fun e -> Trace.Writer.put_timestamped_gc_event s.trace (Trace.Timestamp.now ()) e);
+      let r = f () in
+      unlock_tracer s;
+      Some r
+    with
+    | e -> mark_failed s e; None
+  else None
+
+let process_event_ignore_result s ~(f : unit -> 'a) : unit =
+  let _ : 'a option = process_event s ~f in ()
+
+let gc_events_buffer_size = 1000
+
+let start ?(record_gc_events=true) ?(report_exn=default_report_exn) ~sampling_rate trace =
   let ext_sampler = Geometric_sampler.make ~sampling_rate () in
   let s = { trace; locked = false; locked_ext = false; stopped = false; failed = false;
-            report_exn; ext_sampler } in
+            report_exn; ext_sampler; record_gc_events } in
   let tracker : (_,_) Gc.Memprof.tracker = {
     alloc_minor = (fun info ->
-      if lock_tracer s then begin
-        match Trace.Writer.put_alloc_with_raw_backtrace trace (Trace.Timestamp.now ())
+      process_event s ~f:(fun () ->
+        Trace.Writer.put_alloc_with_raw_backtrace trace (Trace.Timestamp.now ())
                 ~length:info.size
                 ~nsamples:info.n_samples
                 ~source:Minor
-                ~callstack:info.callstack
-        with
-        | r -> unlock_tracer s; Some r
-        | exception e -> mark_failed s e; None
-      end else None);
+                ~callstack:info.callstack));
     alloc_major = (fun info ->
-      if lock_tracer s then begin
-        match Trace.Writer.put_alloc_with_raw_backtrace trace (Trace.Timestamp.now ())
+      process_event s ~f:(fun () ->
+        Trace.Writer.put_alloc_with_raw_backtrace trace (Trace.Timestamp.now ())
                 ~length:info.size
                 ~nsamples:info.n_samples
                 ~source:Major
-                ~callstack:info.callstack
-        with
-        | r -> unlock_tracer s; Some r
-        | exception e -> mark_failed s e; None
-      end else None);
+                ~callstack:info.callstack));
     promote = (fun id ->
-      if lock_tracer s then
-        match Trace.Writer.put_promote trace (Trace.Timestamp.now ()) id with
-        | () -> unlock_tracer s; Some id
-        | exception e -> mark_failed s e; None
-      else None);
+      process_event s ~f:(fun () ->
+        Trace.Writer.put_promote trace (Trace.Timestamp.now ()) id; id));
     dealloc_minor = (fun id ->
-      if lock_tracer s then
-        match Trace.Writer.put_collect trace (Trace.Timestamp.now ()) id with
-        | () -> unlock_tracer s
-        | exception e -> mark_failed s e);
+      process_event_ignore_result s ~f:(fun () ->
+        Trace.Writer.put_collect trace (Trace.Timestamp.now ()) id));
     dealloc_major = (fun id ->
-      if lock_tracer s then
-        match Trace.Writer.put_collect trace (Trace.Timestamp.now ()) id with
-        | () -> unlock_tracer s
-        | exception e -> mark_failed s e) } in
+      process_event_ignore_result s ~f:(fun () ->
+        Trace.Writer.put_collect trace (Trace.Timestamp.now ()) id))} in
   curr_active_tracer := Some s;
   bytes_before_ext_sample := draw_sampler_bytes s;
+  if record_gc_events then begin
+    let gc_actual_buffer_size = Gc_recent_events.init ~buf_size:gc_events_buffer_size in
+    if gc_actual_buffer_size < gc_events_buffer_size then
+      failwith "not enough memory to initialise the gc events buffer"
+  end;
   Gc.Memprof.start
     ~sampling_rate
     ~callstack_size:max_int

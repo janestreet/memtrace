@@ -59,7 +59,8 @@ let summary filename =
       Printf.printf "\n%!"*)
   | Promote _ -> ()
   (*count (Hashtbl.find allocs i)*)
-  | Collect i -> assert (Hashtbl.mem allocs i); Hashtbl.remove allocs i );
+  | Collect i -> assert (Hashtbl.mem allocs i); Hashtbl.remove allocs i
+  | Gc_event _ -> ());
   Reader.close trace;
 
   let rec dump_summary files_rev summary =

@@ -34,7 +34,12 @@ let copy inf outf fact tstart tend =
           let id' = Obj_id.Tbl.find id_remap id in
           Obj_id.Tbl.remove id_remap id;
           Some (Event.Collect id')
-        end else None in
+        end else None
+      | Gc_event _ ->
+        (* CR-someday lmaurer: Consider keeping the event unchanged so long as it may be
+           interesting (say, if we're inside the time bounds or [id_remap] is non-empty)
+        *)
+        None in
     match ev with
     | None -> ()
     | Some ev ->

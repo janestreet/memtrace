@@ -1,18 +1,7 @@
 (** Encoder and decoder for Memtrace traces *)
 
-(** Timestamps *)
-module Timestamp : sig
-  type t
-  val now : unit -> t
-
-  (** Convert to and from the number of microseconds since the Unix epoch *)
-  val of_int64 : int64 -> t
-  val to_int64 : t -> int64
-
-  (** Convert back and forth between the Unix module's float format and timestamps *)
-  val to_float : t -> float
-  val of_float : float -> t
-end
+(* CR-someday dkalinichenko: reorganise the imports here. *)
+module Timestamp = Gc_recent_events.Timestamp
 
 (** Times measured from the start of the trace *)
 module Timedelta : sig
@@ -21,6 +10,7 @@ module Timedelta : sig
   (** Convert to the number of microseconds since the start of the trace *)
   val to_int64 : t -> int64
   val offset : Timestamp.t -> t -> Timestamp.t
+  val delta : Timestamp.t -> Timestamp.t -> t
 end
 
 (** Source locations in the traced program *)
@@ -58,6 +48,17 @@ module Allocation_source : sig
   type t = Minor | Major | External
 end
 
+(* Timedelta representation of GC events *)
+module Gc_event : sig
+  type t = {
+    data : Gc_recent_events.Event_data.t;
+    begin_ : Timedelta.t;
+    end_ : Timedelta.t
+  }
+
+  val to_string : t -> string
+end
+
 (** Trace events *)
 module Event : sig
   type t =
@@ -87,6 +88,7 @@ module Event : sig
       }
     | Promote of Obj_id.t
     | Collect of Obj_id.t
+    | Gc_event of Gc_event.t
 
   val to_string : (Location_code.t -> Location.t list) -> t -> string
 end
@@ -134,6 +136,8 @@ module Writer : sig
     -> Obj_id.t
   val put_collect : t -> Timestamp.t -> Obj_id.t -> unit
   val put_promote : t -> Timestamp.t -> Obj_id.t -> unit
+  val put_gc_event : t -> Timestamp.t -> Gc_event.t -> unit
+  val put_timestamped_gc_event : t -> Timestamp.t -> Gc_recent_events.Event.t -> unit
   val put_event :
     t
     -> decode_callstack_entry:(Location_code.t -> Location.t list)

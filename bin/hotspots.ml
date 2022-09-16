@@ -208,7 +208,8 @@ let count filename =
          done;
          total_samples := !total_samples + nsamples
       | Promote _ -> ()
-      | Collect _ -> ());
+      | Collect _ -> ()
+      | Gc_event _ -> ());
   let tinfo = Reader.info trace in
   Reader.close trace;
   let total_samples = !total_samples in
