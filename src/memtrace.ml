@@ -56,14 +56,16 @@ let trace_if_requested ?context ?sampling_rate () =
        | Some rate when 0. < rate && rate <= 1. -> rate
        | _ ->
          raise (Invalid_argument ("Memtrace.trace_if_requested: " ^
-                                  "sampling_rate must be between 0 and 1")) in
+                                  "sampling_rate must be between 0 and 1"))
+     in
      let sampling_rate =
-       match sampling_rate with
-       | Some _ -> check_rate sampling_rate
-       | None ->
-         match Sys.getenv_opt "MEMTRACE_RATE" with
-         | None | Some "" -> default_sampling_rate
-         | Some rate -> check_rate (float_of_string_opt rate) in
+       match Sys.getenv_opt "MEMTRACE_RATE" with
+       | Some rate -> check_rate (float_of_string_opt rate)
+       | None | Some "" ->
+         match sampling_rate with
+         | Some _ -> check_rate sampling_rate
+         | None -> default_sampling_rate
+     in
      let _s = start_tracing ~context ~sampling_rate ~filename in
      ()
 
