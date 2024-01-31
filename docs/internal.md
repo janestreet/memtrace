@@ -118,16 +118,16 @@ arbitrary program is hard. There are three standard approaches,
 available as options in `perf record`:
 
   - `--call-graph=dwarf` uses the DWARF debugging information
-    
+
   - `--call-graph=fp` follows a chain of frame pointers
-  
+
   - `--call-graph=lbr` uses the Last Branch Record hardware support
 
 However, all of these have disadvantages:
 
   - DWARF exists to support debuggers, and so is designed for
     flexibility rather than speed.
-    
+
     This flexibility is necessary to handle the hard cases of C stack
     frames: for instance, a C program can define a variable-length
     array of ints on the stack, and store its length (in ints, not
