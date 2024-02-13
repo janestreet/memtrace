@@ -1,1 +1,1 @@
-(dirs bin src test trace_ocamlopt)
+(dirs bin src test trace_ocamlopt examples)
