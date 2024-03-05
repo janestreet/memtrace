@@ -1,0 +1,3 @@
+(executables
+ (libraries memtrace domainslib)
+ (names fib_par))
