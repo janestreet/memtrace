@@ -1,6 +1,6 @@
 type t =
-  { mutable failed : bool;
-    mutable stopped : bool;
+  { failed : bool Atomic.t;
+    stopped : bool Atomic.t;
     mutex : Mutex.t;
     report_exn : exn -> unit;
     trace : Trace.Writer.t;
@@ -15,24 +15,27 @@ let bytes_before_ext_sample = Atomic.make max_int
 let draw_sampler_bytes t =
   Geometric_sampler.draw t.ext_sampler * (Sys.word_size / 8)
 
-let[@inline never] rec lock_tracer s =
-  (* Try unlocking mutex returning true if success or
-     Thread.yield () until it can acquire the mutex successfully.
-   *)
-  if Mutex.try_lock s.mutex then
-    true
-  else if s.failed then
+let[@inline never] lock_tracer s =
+  if Atomic.get s.failed then
     false
-  else
-    (Thread.yield (); lock_tracer s)
+    (* During external allocations or closing, a thread may try to obtain
+       a lock it already holds. In that case, Mutex.lock will throw
+       an error and we can ignore it. *)
+  else begin
+    try
+      Mutex.lock s.mutex;
+      true
+    with
+      | Sys_error _ -> false
+  end
 
 let[@inline never] unlock_tracer s =
-  assert (not s.failed);
+  assert (not (Atomic.get s.failed));
   Mutex.unlock s.mutex
 
 let[@inline never] mark_failed s e =
-  s.failed <- true;
-  s.report_exn e;
+  if (Atomic.compare_and_set s.failed false true) then
+    s.report_exn e;
   Mutex.unlock s.mutex
 
 let default_report_exn e =
@@ -50,7 +53,7 @@ let default_report_exn e =
 let start ?(report_exn=default_report_exn) ~sampling_rate trace =
   let ext_sampler = Geometric_sampler.make ~sampling_rate () in
   let mutex = Mutex.create () in
-  let s = { trace; mutex; stopped = false; failed = false;
+  let s = { trace; mutex; stopped = Atomic.make false; failed = Atomic.make false;
             report_exn; ext_sampler } in
   let tracker : (_,_) Gc.Memprof.tracker = {
     alloc_minor = (fun info ->
@@ -96,19 +99,23 @@ let start ?(report_exn=default_report_exn) ~sampling_rate trace =
         | exception e -> mark_failed s e) } in
   Atomic.set curr_active_tracer (Some s);
   Atomic.set bytes_before_ext_sample (draw_sampler_bytes s);
-  ignore (Gc.Memprof.start ~sampling_rate ~callstack_size:max_int tracker);
+  let _profile = Gc.Memprof.start ~sampling_rate ~callstack_size:max_int tracker in
   s
 
 let stop s =
-  if not s.stopped then begin
-    s.stopped <- true;
+  (* Call stop to stop sampling on the current profile.
+     Promotion and deallocation callbacks from a profile may run
+     after stop is called, however we ignore these callbacks when
+     stopping.
+   *)
+  if (Atomic.compare_and_set s.stopped false true) then begin
     Gc.Memprof.stop ();
-    Mutex.protect s.mutex (fun () ->
-        try Trace.Writer.close s.trace
-        with e ->
-          (s.failed <- true; s.report_exn e);
-        Atomic.set curr_active_tracer None
-      )
+    if lock_tracer s then begin
+      try Trace.Writer.close s.trace with e ->
+        (Atomic.set s.failed true; s.report_exn e);
+      Mutex.unlock s.mutex
+    end;
+    Atomic.set curr_active_tracer None
   end
 
 let[@inline never] ext_alloc_slowpath ~bytes =
