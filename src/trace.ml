@@ -348,10 +348,15 @@ let make_writer dest ?getpid (info : Info.t) =
 
 module IntTbl = Hashtbl.MakeSeeded (struct
   type t = int
-  let seeded_hash _seed (id : t) =
+
+  let hash _seed (id : t) =
     let h = id * 189696287 in
     h lxor (h lsr 23)
-  let hash = seeded_hash
+
+  (* Required for OCaml >= 5.0.0, but causes errors for older compilers
+     because it is an unused value declaration. *)
+  let [@warning "-32"] seeded_hash = hash
+
   let equal (a : t) (b : t) = a = b
 end)
 
@@ -754,7 +759,7 @@ module Writer = struct
   (* Unfortunately, efficient access to the backtrace is not possible
      with the current Printexc API, even though internally it's an int
      array. For now, wave the Obj.magic wand. There's a PR to fix this:
-     https://github.com/ocaml/ocaml/pull/9663 *)
+     https://github.com/ocaml/ocaml/pull/9663 *) (* TODO Fix this since 4.12*)
   let location_code_array_of_raw_backtrace (b : Printexc.raw_backtrace) =
     (Obj.magic b : Location_code.t array)
 
@@ -768,7 +773,7 @@ module Writer = struct
       let slot = convert_raw_backtrace_slot slot in
       match Slot.location slot with
       | None -> tail
-      | Some { filename; line_number; start_char; end_char } ->
+      | Some { filename; line_number; start_char; end_char; _} ->
          let defname = match Slot.name slot with Some n -> n | _ -> "??" in
          { filename; line=line_number; start_char; end_char; defname }::tail in
     get_locations (get_raw_backtrace_slot callstack i) |> List.rev
