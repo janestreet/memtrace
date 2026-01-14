@@ -1,5 +1,5 @@
 (library
  (name memtrace)
  (public_name memtrace)
- (libraries unix threads))
-
+ (libraries unix threads)
+ (preprocess no_preprocessing))

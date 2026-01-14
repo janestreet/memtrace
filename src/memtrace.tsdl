@@ -74,6 +74,10 @@ stream {
        bad packets can be skipped entirely. */
     uint64 pid;
 
+    /* Domain ID of the domain that wrote this packet.
+       If version < 3, then this field is absent and assumed to be zero. */
+    uint16 domain;
+
     /* See below. */
     uint16 cache_verify_ix;
     uint16 cache_verify_pred;

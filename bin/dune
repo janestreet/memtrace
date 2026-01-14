@@ -1,9 +1,6 @@
 (executables
- (names dump_trace identify subsample hotspots flamegraph)
- (public_names
-  memtrace_dump_trace
-  memtrace_identify
-  memtrace_subsample
-  memtrace_hotspots
-  memtrace_flamegraph)
- (libraries memtrace))
+ (modes byte exe)
+ (names dump_trace identify subsample flamegraph hotspots strip_names)
+ (libraries memtrace unix)
+ (preprocess
+  (pps ppx_jane)))
