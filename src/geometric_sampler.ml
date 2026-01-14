@@ -1,4 +1,4 @@
-type t =
+type t : value mod portable =
   { rand : Random.State.t
   ; one_log1m_lambda : float
   }

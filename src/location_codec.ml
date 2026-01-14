@@ -1,8 +1,8 @@
 open Buf
 
 (* Move-to-front codec *)
-module Mtf_table : sig
-  type 'a t
+module Mtf_table : sig @@ portable
+  type 'a t : value mod portable with 'a
 
   val create : unit -> 'a t
 

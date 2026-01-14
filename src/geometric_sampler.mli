@@ -1,3 +1,5 @@
+@@ portable
+
 (** An efficient sampler for geometrically distributed random variables. (Port to OCaml of
     the statmemprof sampler used in the OCaml runtime)
 
@@ -15,13 +17,13 @@
     so (which is one less). This means that the result is never zero. This convention is
     not universal, and some authers use "geometrically distributed" for the zero-based
     distribution. *)
-type t
+type t : value mod portable
 
 (** Create a sampler with a given sampling rate and randomness source. The default for
     [rand] uses a constant seed, giving deterministic results *)
 val make : ?rand:Random.State.t -> sampling_rate:float -> unit -> t
 
-val copy : ?rand:Random.State.t -> t -> t
+val copy : ?rand:Random.State.t -> t @ contended -> t
 
 (** Returns a geometrically-distributed random integer in the range [1..inf)
     with mean 1/sampling_rate *)

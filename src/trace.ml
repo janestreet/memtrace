@@ -252,7 +252,7 @@ module Obj_id = struct
 
   module Allocator = struct
     type nonrec t =
-      { global_ids : t Atomic.t
+      { global_ids : t Atomic.t @@ contended
       ; mutable start_id : t (* first object ID this packet *)
       ; mutable next_id : t (* next object ID in this packet *)
       ; mutable last_id : t (* object ID at which we need to reallocate *)
@@ -289,7 +289,10 @@ module Obj_id = struct
     ;;
 
     let create () = of_global_ids (Atomic.make 0)
-    let for_new_domain { global_ids; _ } : unit -> t = fun () -> of_global_ids global_ids
+
+    let for_new_domain { global_ids; _ } : (unit -> t) @ portable =
+      fun () -> of_global_ids global_ids
+    ;;
   end
 end
 
@@ -357,10 +360,10 @@ let get_trace_info b ~packet_info =
 
 (** Trace writer *)
 
-type writer =
+type writer : value mod portable =
   { dest : Buf.Shared_writer_fd.t
   ; pid : int64
-  ; getpid : unit -> int64
+  ; getpid : unit -> int64 @@ portable
   ; domain : Domain_id.t
   ; loc_writer : Location_codec.Writer.t
   ; cache : Backtrace_codec.Writer.t
@@ -380,7 +383,9 @@ type writer =
   ; mutable packet : Write.t
   }
 
-let writer_for_domain ~dest ~pid ~getpid ~domain ~obj_ids ~start_time : writer =
+let writer_for_domain ~dest ~pid ~getpid ~domain ~obj_ids ~start_time
+  : writer @ uncontended
+  =
   let packet = Write.of_bytes (Bytes.make max_packet_size '\042') in
   let packet_header = put_ctf_header packet ~pid ~domain ~cache:None in
   let cache = Backtrace_codec.Writer.create () in
@@ -912,12 +917,16 @@ module Writer = struct
   let create = make_writer
   let domain t = t.domain
 
-  let for_domain_at_time ~start_time t : domain:int -> t =
+  let for_domain_at_time ~start_time (t @ nonportable uncontended)
+    : (domain:int -> t) @ portable
+    =
     let { dest; pid; getpid; _ } = t in
     let obj_ids = Obj_id.Allocator.for_new_domain t.obj_ids in
     fun ~domain ->
-      let obj_ids = obj_ids () in
-      let t = writer_for_domain ~dest ~pid ~getpid ~domain ~obj_ids ~start_time in
+      let obj_ids @ uncontended = obj_ids () in
+      let t @ uncontended =
+        writer_for_domain ~dest ~pid ~getpid ~domain ~obj_ids ~start_time
+      in
       t
   ;;
 

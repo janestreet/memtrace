@@ -1,3 +1,5 @@
+@@ portable
+
 module Location : sig
   type t =
     { filename : string
@@ -12,7 +14,7 @@ module Location : sig
 end
 
 module Writer : sig
-  type t
+  type t : value mod portable
 
   val create : unit -> t
   val max_length : int
@@ -22,7 +24,7 @@ module Writer : sig
 end
 
 module Reader : sig
-  type t
+  type t : value mod portable
 
   val create : unit -> t
   val get_location : t -> Buf.Read.t -> int * Location.t list

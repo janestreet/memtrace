@@ -1,5 +1,7 @@
+@@ portable
+
 module Writer : sig
-  type t
+  type t : value mod portable
 
   val create : unit -> t
 
@@ -21,7 +23,7 @@ module Writer : sig
 end
 
 module Reader : sig
-  type t
+  type t : value mod portable
 
   val create : unit -> t
 
@@ -34,7 +36,7 @@ module Reader : sig
 
   val skip_backtrace : t -> Buf.Read.t -> nencoded:int -> common_pfx_len:int -> unit
 
-  type cache_verifier
+  type cache_verifier : immutable_data
 
   val get_cache_verifier : Buf.Read.t -> cache_verifier
   val check_cache_verifier : t -> cache_verifier -> bool

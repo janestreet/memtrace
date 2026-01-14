@@ -44,9 +44,9 @@ module Shared = struct
   let of_bytes_sub buf ~pos ~pos_end = { buf; pos; pos_end }
   let remaining b = b.pos_end - b.pos
 
-  external bswap_16 : int -> int = "%bswap16"
-  external bswap_32 : int32 -> int32 = "%bswap_int32"
-  external bswap_64 : int64 -> int64 = "%bswap_int64"
+  external bswap_16 : int -> int @@ portable = "%bswap16"
+  external bswap_32 : int32 -> int32 @@ portable = "%bswap_int32"
+  external bswap_64 : int64 -> int64 @@ portable = "%bswap_int64"
 end
 
 module Write = struct
@@ -55,9 +55,9 @@ module Write = struct
   let write_fd fd b = Shared_writer_fd.write_fully fd b.buf ~pos:0 ~len:b.pos
   let put_raw_8 b i v = Bytes.unsafe_set b i (Char.unsafe_chr v)
 
-  external put_raw_16 : Bytes.t -> int -> int -> unit = "%caml_bytes_set16u"
-  external put_raw_32 : Bytes.t -> int -> int32 -> unit = "%caml_bytes_set32u"
-  external put_raw_64 : Bytes.t -> int -> int64 -> unit = "%caml_bytes_set64u"
+  external put_raw_16 : Bytes.t -> int -> int -> unit @@ portable = "%caml_bytes_set16u"
+  external put_raw_32 : Bytes.t -> int -> int32 -> unit @@ portable = "%caml_bytes_set32u"
+  external put_raw_64 : Bytes.t -> int -> int64 -> unit @@ portable = "%caml_bytes_set64u"
 
   exception Overflow of int
 
@@ -229,9 +229,9 @@ module Read = struct
 
   let empty = { buf = Bytes.make 0 '?'; pos = 0; pos_end = 0 }
 
-  external get_raw_16 : Bytes.t -> int -> int = "%caml_bytes_get16u"
-  external get_raw_32 : Bytes.t -> int -> int32 = "%caml_bytes_get32u"
-  external get_raw_64 : Bytes.t -> int -> int64 = "%caml_bytes_get64u"
+  external get_raw_16 : Bytes.t -> int -> int @@ portable = "%caml_bytes_get16u"
+  external get_raw_32 : Bytes.t -> int -> int32 @@ portable = "%caml_bytes_get32u"
+  external get_raw_64 : Bytes.t -> int -> int64 @@ portable = "%caml_bytes_get64u"
 
   exception Underflow of int
 

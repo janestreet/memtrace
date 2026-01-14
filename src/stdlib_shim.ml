@@ -1,16 +1,7 @@
-(* In non-OxCaml builds, this file has stub implementations of some OxCaml stdlib features *)
+(* In OxCaml builds, this file does nothing.
 
-type 'a or_null =
-  | Null
-  | This of 'a
+   In upstream builds, it is replaced with stdlib_shim_upstream.ml, to add stub
+   implementations of some OxCaml stdlib features that memtrace uses. *)
 
-module Obj = struct
-  include Obj
-
-  let magic_uncontended = Fun.id
-end
-
-module Hashtbl = struct
-  include Hashtbl
-  module MakeSeededPortable = MakeSeeded
-end
+(* Hack to avoid "unused open" warnings. *)
+type nonrec unit = unit

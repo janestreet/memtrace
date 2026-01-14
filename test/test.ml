@@ -175,7 +175,7 @@ let test_failure () =
   @@ fun fd ->
   let w = Writer.create fd info in
   let got_epipe = Atomic.make false in
-  let report_exn = function
+  let report_exn @ portable = function
     | Unix.Unix_error (Unix.EPIPE, "write", _) -> Atomic.set got_epipe true
     | e -> raise e
   in

@@ -1,6 +1,8 @@
+@@ portable
+
 module Shared_writer_fd : sig
   (** A Unix file descriptor, shared between multiple writers *)
-  type t
+  type t : value mod contended portable
 
   exception Closed
 

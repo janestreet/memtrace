@@ -1,8 +1,10 @@
+@@ portable
+
 (** Encoder and decoder for Memtrace traces *)
 
 (** Timestamps *)
 module Timestamp : sig
-  type t
+  type t : immutable_data
 
   val now : unit -> t
 
@@ -19,7 +21,7 @@ end
 
 (** Times measured from the start of the trace *)
 module Timedelta : sig
-  type t
+  type t : immutable_data
 
   (** Convert to the number of microseconds since the start of the trace *)
   val to_int64 : t -> int64
@@ -43,7 +45,7 @@ end
 
 (** Identifiers to represent allocations *)
 module Obj_id : sig
-  type t = private int
+  type t : immutable_data = private int
 
   (** For convenience, a hashtable keyed by object ID *)
   module Tbl : Hashtbl.SeededS with type key = t
@@ -142,13 +144,13 @@ end
 
 (** Writing traces *)
 module Writer : sig
-  type t
+  type t : value mod portable
 
   exception Pid_changed
 
-  val create : Unix.file_descr -> ?getpid:(unit -> int64) -> Info.t -> t
+  val create : Unix.file_descr -> ?getpid:(unit -> int64) @ portable -> Info.t -> t
   val domain : t -> Domain_id.t
-  val for_domain : t -> domain:Domain_id.t -> t
+  val for_domain : t -> (domain:Domain_id.t -> t) @ portable
 
   (** All of the functions below may raise Unix_error if writing to the file descriptor
       fails, or Pid_changed if getpid returns a different value. *)
@@ -197,7 +199,7 @@ module Writer : sig
         multiplexed into a single stream *)
     type t
 
-    val create : Unix.file_descr -> ?getpid:(unit -> int64) -> Info.t -> t
+    val create : Unix.file_descr -> ?getpid:(unit -> int64) @ portable -> Info.t -> t
 
     val put_event
       :  t
