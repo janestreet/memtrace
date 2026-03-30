@@ -1,3 +1,5 @@
+type write_fn = Unix.file_descr -> bytes -> int -> int -> int
+
 module Shared_writer_fd : sig
   (** A Unix file descriptor, shared between multiple writers *)
   type t
@@ -7,8 +9,11 @@ module Shared_writer_fd : sig
   val make : Unix.file_descr -> t
 
   (** Writes the specified range of a buffer to the file descriptor, raising Closed if
-      [close] has been called *)
-  val write_fully : t -> bytes -> pos:int -> len:int -> unit
+      [close] has been called.
+
+      The optional [write] parameter allows customizing how bytes are written (default:
+      [Unix.write]). *)
+  val write_fully : ?write:write_fn -> t -> bytes -> pos:int -> len:int -> unit
 
   val close : t -> unit
 end
@@ -30,8 +35,11 @@ module Write : sig
 
   (** [write_fd fd b] writes the bytes written to b to the fd.
 
-      No bufs are invalidated *)
-  val write_fd : Shared_writer_fd.t -> t -> unit
+      No bufs are invalidated.
+
+      The optional [write] parameter allows customizing how bytes are written (default:
+      [Unix.write]). *)
+  val write_fd : ?write:write_fn -> Shared_writer_fd.t -> t -> unit
 
   (** Writing to a buf. All types are written little-endian. All functions raise Overflow
       if there is insufficient space remaining *)

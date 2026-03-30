@@ -361,6 +361,7 @@ type writer =
   { dest : Buf.Shared_writer_fd.t
   ; pid : int64
   ; getpid : unit -> int64
+  ; write : Buf.write_fn
   ; domain : Domain_id.t
   ; loc_writer : Location_codec.Writer.t
   ; cache : Backtrace_codec.Writer.t
@@ -380,7 +381,7 @@ type writer =
   ; mutable packet : Write.t
   }
 
-let writer_for_domain ~dest ~pid ~getpid ~domain ~obj_ids ~start_time : writer =
+let writer_for_domain ~dest ~pid ~getpid ~write ~domain ~obj_ids ~start_time : writer =
   let packet = Write.of_bytes (Bytes.make max_packet_size '\042') in
   let packet_header = put_ctf_header packet ~pid ~domain ~cache:None in
   let cache = Backtrace_codec.Writer.create () in
@@ -391,6 +392,7 @@ let writer_for_domain ~dest ~pid ~getpid ~domain ~obj_ids ~start_time : writer =
     { dest
     ; pid
     ; getpid
+    ; write
     ; domain
     ; loc_writer = Location_codec.Writer.create ()
     ; new_locs = [||]
@@ -410,7 +412,9 @@ let writer_for_domain ~dest ~pid ~getpid ~domain ~obj_ids ~start_time : writer =
   s
 ;;
 
-let make_writer dest ?getpid (info : Info.t) =
+let default_write fd buf pos len = Unix.write fd buf pos len
+
+let make_writer dest ?(write = default_write) ?getpid (info : Info.t) =
   let dest = Buf.Shared_writer_fd.make dest in
   let open Write in
   let getpid =
@@ -432,8 +436,8 @@ let make_writer dest ?getpid (info : Info.t) =
      ~timestamp_end:info.start_time
      ~alloc_id_begin:0
      ~alloc_id_end:0;
-   write_fd dest packet);
-  writer_for_domain ~dest ~pid ~getpid ~domain ~obj_ids ~start_time:info.start_time
+   write_fd ~write dest packet);
+  writer_for_domain ~dest ~pid ~getpid ~write ~domain ~obj_ids ~start_time:info.start_time
 ;;
 
 module Location_code = struct
@@ -552,7 +556,7 @@ let flush_at s ~now =
       ~timestamp_end:s.packet_time_start
       ~alloc_id_begin:s.obj_ids.start_id
       ~alloc_id_end:s.obj_ids.start_id;
-    write_fd s.dest b
+    write_fd ~write:s.write s.dest b
   done;
   (* Next, flush the actual events *)
   finish_ctf_header
@@ -562,7 +566,7 @@ let flush_at s ~now =
     ~timestamp_end:s.packet_time_end
     ~alloc_id_begin:s.obj_ids.start_id
     ~alloc_id_end:s.obj_ids.next_id;
-  write_fd s.dest s.packet;
+  write_fd ~write:s.write s.dest s.packet;
   (* Finally, reset the buffer *)
   s.packet_time_start <- now;
   s.packet_time_end <- now;
@@ -913,11 +917,11 @@ module Writer = struct
   let domain t = t.domain
 
   let for_domain_at_time ~start_time t : domain:int -> t =
-    let { dest; pid; getpid; _ } = t in
+    let { dest; pid; getpid; write; _ } = t in
     let obj_ids = Obj_id.Allocator.for_new_domain t.obj_ids in
     fun ~domain ->
       let obj_ids = obj_ids () in
-      let t = writer_for_domain ~dest ~pid ~getpid ~domain ~obj_ids ~start_time in
+      let t = writer_for_domain ~dest ~pid ~getpid ~write ~domain ~obj_ids ~start_time in
       t
   ;;
 

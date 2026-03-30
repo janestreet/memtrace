@@ -144,6 +144,13 @@ let go () =
 ;;
 
 let () =
-  go ();
-  go ()
+  if Domain.recommended_domain_count () > 1
+  then ()
+  else (
+    (* Random.bool () initialises some state on first use.
+       To avoid tracing this, use it now. *)
+    let _ : bool = Sys.opaque_identity (Random.bool ()) in
+    for _i = 1 to 5 do
+      go ()
+    done)
 ;;

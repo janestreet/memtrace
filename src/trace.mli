@@ -146,7 +146,17 @@ module Writer : sig
 
   exception Pid_changed
 
-  val create : Unix.file_descr -> ?getpid:(unit -> int64) -> Info.t -> t
+  type write_fn := Unix.file_descr -> bytes -> int -> int -> int
+
+  (** Create a trace writer. The optional [write] parameter allows customizing how bytes
+      are written to the fd. The [write] function must be portable. *)
+  val create
+    :  Unix.file_descr
+    -> ?write:write_fn
+    -> ?getpid:(unit -> int64)
+    -> Info.t
+    -> t
+
   val domain : t -> Domain_id.t
   val for_domain : t -> domain:Domain_id.t -> t
 
