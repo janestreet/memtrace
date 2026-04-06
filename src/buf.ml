@@ -1,3 +1,5 @@
+type write_fn = Unix.file_descr -> bytes -> int -> int -> int
+
 module Shared_writer_fd = struct
   type t =
     { lock : Mutex.t
@@ -9,27 +11,32 @@ module Shared_writer_fd = struct
 
   exception Closed
 
-  let rec write_fully fd buf ~pos ~len =
+  let rec do_write_fully write fd buf ~pos ~len =
     if len = 0
     then ()
     else (
-      let written = Unix.write fd buf pos len in
-      write_fully fd buf ~pos:(pos + written) ~len:(len - written))
+      let written = write fd buf pos len in
+      do_write_fully write fd buf ~pos:(pos + written) ~len:(len - written))
   ;;
 
-  let write_fully t buf ~pos ~len =
+  let default_write fd buf pos len = Unix.write fd buf pos len
+
+  let write_fully ?(write = default_write) t buf ~pos ~len =
     Mutex.lock t.lock;
     Fun.protect
       (fun () ->
         if Atomic.get t.closed then raise Closed;
-        write_fully t.fd buf ~pos ~len)
+        do_write_fully write t.fd buf ~pos ~len)
       ~finally:(fun () -> Mutex.unlock t.lock)
   ;;
 
   let close t =
     Mutex.lock t.lock;
     Atomic.set t.closed true;
-    Mutex.unlock t.lock
+    try Unix.close t.fd with
+    | (_ : exn) ->
+      ();
+      Mutex.unlock t.lock
   ;;
 end
 
@@ -52,7 +59,10 @@ end
 module Write = struct
   include Shared
 
-  let write_fd fd b = Shared_writer_fd.write_fully fd b.buf ~pos:0 ~len:b.pos
+  let write_fd ?write fd b =
+    Shared_writer_fd.write_fully ?write fd b.buf ~pos:0 ~len:b.pos
+  ;;
+
   let put_raw_8 b i v = Bytes.unsafe_set b i (Char.unsafe_chr v)
 
   external put_raw_16 : Bytes.t -> int -> int -> unit @@ portable = "%caml_bytes_set16u"
