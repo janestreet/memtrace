@@ -28,8 +28,8 @@ let is_bad_location (loc : Memtrace.Trace.Location.t) =
 ;;
 
 let validate_ext_alloc_backtrace r bt len =
-  (* Make sure the backtrace has been scrubbed of calls to
-     [ext_alloc] and [ext_alloc_slowpath] in [memprof_tracer.ml] *)
+  (* Make sure the backtrace has been scrubbed of calls to [ext_alloc] and
+     [ext_alloc_slowpath] in [memprof_tracer.ml] *)
   for i = 0 to len - 1 do
     let locs = Memtrace.Trace.Reader.lookup_location_code r bt.(i) in
     List.iter
@@ -147,8 +147,8 @@ let () =
   if Domain.recommended_domain_count () > 1
   then ()
   else (
-    (* Random.bool () initialises some state on first use.
-       To avoid tracing this, use it now. *)
+    (* Random.bool () initialises some state on first use. To avoid tracing this, use it
+       now. *)
     let _ : bool = Sys.opaque_identity (Random.bool ()) in
     for _i = 1 to 5 do
       go ()

@@ -20,8 +20,7 @@ end = struct
       skipped_before : int
     }
 
-  (*let upper_bound t c =
-    c.skipped_before
+  (* let upper_bound t c = c.skipped_before
   *)
   type t =
     { k : int
@@ -42,7 +41,7 @@ end = struct
   ;;
 
   let add t x =
-    (*  check t;*)
+    (* check t; *)
     (match Tbl.find_opt t.tbl x with
      | Some c -> c.hits <- c.hits + 1
      | None ->
@@ -177,12 +176,11 @@ module HH = Heavy_hitters (struct
 
     let hash ((a, b) : t) = (a.id * 1231441) + (b.id * 3821)
     let equal ((a, b) : t) ((a', b') : t) = a.id = a'.id && b.id = b'.id
-    (*
-       let hash ((a : location_code), (b : location_code)) =
-    Int64.(shift_right (add (mul (a :> int64) 0x94837298472a9321L) (mul (b :> int64) 0x4783213feac37L)) 11 |> to_int)
-  let equal (a, b) (a', b') =
-    Int64.equal (a : location_code :> int64) (a' : location_code :> int64) &&
-      Int64.equal (b : location_code :> int64) (b' : location_code:> int64)*)
+    (* let hash ((a : location_code), (b : location_code)) = Int64.(shift_right (add (mul
+       (a :> int64) 0x94837298472a9321L) (mul (b :> int64) 0x4783213feac37L)) 11 |>
+       to_int) let equal (a, b) (a', b') = Int64.equal (a : location_code :> int64) (a' :
+       location_code :> int64) && Int64.equal (b : location_code :> int64) (b' :
+       location_code:> int64) *)
   end)
 
 let count filename =
@@ -291,8 +289,9 @@ let count filename =
     let callers =
       List.sort
         (fun (_c, f) (_c', f') ->
-          (*compare (avg_dist_to_alloc c) (avg_dist_to_alloc c')*)
-          (* compare (float_of_int f' /. float_of_int (total_allocs c')) (float_of_int f /. float_of_int (total_allocs c)) *)
+          (* compare (avg_dist_to_alloc c) (avg_dist_to_alloc c') *)
+          (* compare (float_of_int f' /. float_of_int (total_allocs c')) (float_of_int f
+             /. float_of_int (total_allocs c)) *)
           compare f' f)
         callers
     in
@@ -314,13 +313,10 @@ let count filename =
     Printf.printf "\n")
 ;;
 
-(*
-   let pair_freq = d1 in
-    let tot_freq = summarize_fn fn in
-    if 100 * pair_freq / tot_freq > 20 then begin
-      let frac_of_program = float_of_int pair_freq /. float_of_int !total_samples in
-      Printf.printf "%.1f%% % 6d % 6d % 6d %d %s %s\n" (100. *. rf) !total_samples d1 d2 tot_freq fn.name al.name
-    end)
+(* let pair_freq = d1 in let tot_freq = summarize_fn fn in if 100 * pair_freq / tot_freq >
+   20 then begin let frac_of_program = float_of_int pair_freq /. float_of_int
+   !total_samples in Printf.printf "%.1f%% % 6d % 6d % 6d %d %s %s\n" (100. *. rf)
+   !total_samples d1 d2 tot_freq fn.name al.name end)
 *)
 
 let () =
