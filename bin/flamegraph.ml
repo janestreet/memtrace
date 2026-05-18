@@ -68,7 +68,7 @@ let summary filename =
         | x :: xs -> x :: dedup xs
       in
       let filenames = dedup filenames in
-      let first_filenames = (*List.rev*) filenames in
+      let first_filenames = (* List.rev *) filenames in
       let first_filenames =
         first_filenames
         |> List.filter (fun f ->
@@ -83,10 +83,9 @@ let summary filename =
       incr nallocs;
       if true then count (first_filenames, nsamples)
     (* count (first_filenames, nsamples) *)
-    (*    first_filenames |> List.iter (Printf.printf " %s");
-      Printf.printf "\n%!"*)
+    (* first_filenames |> List.iter (Printf.printf " %s"); Printf.printf "\n%!" *)
     | Promote _ -> ()
-    (*count (Hashtbl.find allocs i)*)
+    (* count (Hashtbl.find allocs i) *)
     | Collect (i, _) ->
       assert (Hashtbl.mem allocs i);
       Hashtbl.remove allocs i);

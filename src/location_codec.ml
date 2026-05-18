@@ -197,11 +197,10 @@ module Reader = struct
             file_mtf
             ~if_absent:(fun () ->
               let s = get_string b in
-              (* Reuse the defname MTF table that's about to be pushed off.
-               This is only present to match a bug in the v001 encoder,
-               which sometimes generated traces relying on this behaviour.
-               The current encoder never relies on this, so once v001
-               trace files stop mattering, this match can be deleted *)
+              (* Reuse the defname MTF table that's about to be pushed off. This is only
+                 present to match a bug in the v001 encoder, which sometimes generated
+                 traces relying on this behaviour. The current encoder never relies on
+                 this, so once v001 trace files stop mattering, this match can be deleted *)
               let d =
                 match Mtf_table.last file_mtf with
                 | Some v -> v

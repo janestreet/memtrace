@@ -2,20 +2,20 @@ open Stdlib_shim
 
 (* The tracer requires some tricky locking.
 
-   It can be used both synchronously from user code (e.g. in calls to ext_alloc)
-   and asynchronously from Gc.Memprof callbacks. Locks in async callbacks cannot
-   block, as they might interrupt code which synchronously holds the lock, and
-   so would deadlock if they blocked.
+   It can be used both synchronously from user code (e.g. in calls to ext_alloc) and
+   asynchronously from Gc.Memprof callbacks. Locks in async callbacks cannot block, as
+   they might interrupt code which synchronously holds the lock, and so would deadlock if
+   they blocked.
 
    Instead, users of lock_async must handle the case where the lock is already held
-   synchronously by the current thread. In this case, the lock can't be taken, and
-   instead the user must defer some work to be processed when the synchronous holder
-   later releases the lock.
+   synchronously by the current thread. In this case, the lock can't be taken, and instead
+   the user must defer some work to be processed when the synchronous holder later
+   releases the lock.
 
    In other words, the lock is nonreentrant: you can't take a lock you already hold.
 
-   This module is implemented with nonatomic references, and should only be used on
-   the main domain (that is, when [Domain.is_main_domain ()]). *)
+   This module is implemented with nonatomic references, and should only be used on the
+   main domain (that is, when [Domain.is_main_domain ()]). *)
 module Lock = struct
   type 'a t =
     { mutable locked : bool
@@ -94,13 +94,13 @@ module Lock = struct
      lock may already be held by the thread that is currently running the asynchronous
      handler. So, it is incorrect to use [lock_sync] / [unlock_sync] from a handler.
 
-     Instead, [lock_async] and [unlock_async] may be used from asynchronous
-     handlers. Taking a lock asynchronously can return a [Is_sync_locked_by_this_thread],
-     indicating that the lock is already held by this thread and so cannot be waited for.
+     Instead, [lock_async] and [unlock_async] may be used from asynchronous handlers.
+     Taking a lock asynchronously can return a [Is_sync_locked_by_this_thread], indicating
+     that the lock is already held by this thread and so cannot be waited for.
 
-     In this state, it is not in general safe to manipulate the state protected by the lock
-     (since you don't know what the interrupted thread is doing with it), but you can use
-     [defer] to schedule work for when the interrupted thread releases the lock. *)
+     In this state, it is not in general safe to manipulate the state protected by the
+     lock (since you don't know what the interrupted thread is doing with it), but you can
+     use [defer] to schedule work for when the interrupted thread releases the lock. *)
 
   type lock_async_result =
     | Success
@@ -162,8 +162,8 @@ let[@inline never] mark_failed s e =
 let default_report_exn e =
   match e with
   | Trace.Writer.Pid_changed ->
-    (* This error is silently ignored, so that if Memtrace is active across
-        Unix.fork () then the child process silently stops tracing *)
+    (* This error is silently ignored, so that if Memtrace is active across Unix.fork ()
+       then the child process silently stops tracing *)
     ()
   | e ->
     let msg = Printf.sprintf "Memtrace failure: %s\n" (Printexc.to_string e) in
@@ -289,13 +289,12 @@ let[@inline never] ext_alloc_slowpath ~bytes : Trace.Obj_id.t or_null =
           assert (!samples > 0);
           let callstack = Printexc.get_callstack max_int in
           let drop_slots =
-            (* The last callstack slot will be exactly this function, since it's
-             never inlined. We don't want to see it in the backtrace, so drop it
-             here. *)
+            (* The last callstack slot will be exactly this function, since it's never
+               inlined. We don't want to see it in the backtrace, so drop it here. *)
             1
           in
-          (* Sys.opaque_identity ensures that flambda2 doesn't move the
-           allocation past the [unlock_tracer_ext] call *)
+          (* Sys.opaque_identity ensures that flambda2 doesn't move the allocation past
+             the [unlock_tracer_ext] call *)
           This
             (Trace.Writer.put_alloc_with_suffix_of_raw_backtrace
                s.trace
@@ -331,9 +330,9 @@ let ext_alloc ~bytes =
     bytes_before_ext_sample := n;
     if n <= 0
     then
-      (* This has [@tail] to make sure this function won't appear in any backtraces (unless
-         it's inlined into another function, in which case we have to filter it out after
-         the fact). *)
+      (* This has [@tail] to make sure this function won't appear in any backtraces
+         (unless it's inlined into another function, in which case we have to filter it
+         out after the fact). *)
       ext_alloc_slowpath ~bytes [@tail]
     else Null)
 ;;

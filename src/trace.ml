@@ -1,16 +1,15 @@
 open Stdlib_shim
-(* This is the implementation of the encoder/decoder for the memtrace
-   format. This format is quite involved, and to understand it it's
-   best to read the CTF specification and comments in memtrace.tsl
-   first. *)
+(* This is the implementation of the encoder/decoder for the memtrace format. This format
+   is quite involved, and to understand it it's best to read the CTF specification and
+   comments in memtrace.tsl first. *)
 
 (* Increment this when the format changes in an incompatible way *)
-(* Version 2: added context field to trace_info event
-   Version 3: added domain field to packet header *)
+(* Version 2: added context field to trace_info event Version 3: added domain field to
+   packet header *)
 let memtrace_version = 3
 
-(* If this is true, then all backtraces are immediately decoded and
-   verified after encoding. This is slow, but helpful for debugging. *)
+(* If this is true, then all backtraces are immediately decoded and verified after
+   encoding. This is slow, but helpful for debugging. *)
 let cache_enable_debug = false
 
 open Buf
@@ -56,8 +55,8 @@ module IntTbl = Hashtbl.MakeSeededPortable (struct
       h lxor (h lsr 23)
     ;;
 
-    (* Required for OCaml >= 5.0.0, but causes errors for older compilers
-     because it is an unused value declaration. *)
+    (* Required for OCaml >= 5.0.0, but causes errors for older compilers because it is an
+       unused value declaration. *)
     let[@warning "-32"] seeded_hash = hash
     let equal (a : t) (b : t) = a = b
   end)
@@ -76,8 +75,7 @@ end
 
 (** CTF packet headers *)
 
-(* Small enough that Unix.write still does single writes.
-   (i.e. below 64k) *)
+(* Small enough that Unix.write still does single writes. (i.e. below 64k) *)
 let max_packet_size = 1 lsl 15
 
 type packet_header_info =
@@ -92,8 +90,7 @@ type packet_header_info =
   ; cache_verifier : Backtrace_codec.Reader.cache_verifier
   }
 
-(* When writing a packet, some fields can be filled in only once the
-   packet is complete. *)
+(* When writing a packet, some fields can be filled in only once the packet is complete. *)
 type ctf_header_offsets =
   { off_packet_size : Write.position_32
   ; off_timestamp_begin : Write.position_64
@@ -539,12 +536,12 @@ let log_new_loc s loc =
 exception Pid_changed
 
 let flush_at s ~now =
-  (* If the PID has changed, then the process forked and we're in the subprocess.
-     Don't write anything to the file, and raise an exception to quit tracing *)
+  (* If the PID has changed, then the process forked and we're in the subprocess. Don't
+     write anything to the file, and raise an exception to quit tracing *)
   if s.pid <> s.getpid () then raise Pid_changed;
   let open Write in
-  (* First, flush newly-seen locations.
-     These must be emitted before any events that might refer to them *)
+  (* First, flush newly-seen locations. These must be emitted before any events that might
+     refer to them *)
   let i = ref 0 in
   while !i < s.new_locs_len do
     let b = Write.of_bytes s.new_locs_buf in
@@ -584,8 +581,7 @@ let flush_at s ~now =
 
 let max_ev_size =
   100
-  (* upper bound on fixed-size portion of events
-         (i.e. not backtraces or locations) *)
+  (* upper bound on fixed-size portion of events (i.e. not backtraces or locations) *)
   + max Location_codec.Writer.max_length Backtrace_codec.Writer.max_length
 ;;
 
@@ -689,8 +685,8 @@ let put_alloc
      assert (nencoded <= 0xff);
      update_8 b p nencoded
    | Len_long p ->
-     (* This can't overflow because there isn't room in a packet for more than
-        0xffff entries. (See max_packet_size) *)
+     (* This can't overflow because there isn't room in a packet for more than 0xffff
+        entries. (See max_packet_size) *)
      assert (nencoded <= 0xffff);
      update_16 b p nencoded);
   (match s.debug_reader_cache with
@@ -936,10 +932,9 @@ module Writer = struct
 
   let for_domain t = for_domain_at_time ~start_time:t.packet_time_end t
 
-  (* Unfortunately, efficient access to the backtrace is not possible
-     with the current Printexc API, even though internally it's an int
-     array. For now, wave the Obj.magic wand. There's a PR to fix this:
-     https://github.com/ocaml/ocaml/pull/9663 *)
+  (* Unfortunately, efficient access to the backtrace is not possible with the current
+     Printexc API, even though internally it's an int array. For now, wave the Obj.magic
+     wand. There's a PR to fix this: https://github.com/ocaml/ocaml/pull/9663 *)
   let location_code_array_of_raw_backtrace (b : Printexc.raw_backtrace)
     : Location_code.t array
     =

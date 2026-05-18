@@ -5,9 +5,9 @@ type cache_bucket = int (* 0 to cache_size - 1 *)
 module Writer = struct
   open Buf.Write
 
-  (* The writer cache carries slightly more state than the reader cache,
-     since the writer must make decisions about which slot to use.
-     (The reader just follows the choices made by the writer) *)
+  (* The writer cache carries slightly more state than the reader cache, since the writer
+     must make decisions about which slot to use. (The reader just follows the choices
+     made by the writer) *)
   type t =
     { cache : int array
     ; cache_date : int array
@@ -52,8 +52,7 @@ module Writer = struct
       else (
         let mask = cache_size - 1 in
         let slot = callstack.(pos) in
-        (* Pick the least recently used of two slots, selected by two
-           different hashes. *)
+        (* Pick the least recently used of two slots, selected by two different hashes. *)
         let hash1 = ((slot * 0x4983723) lsr 11) land mask in
         let hash2 = ((slot * 0xfdea731) lsr 21) land mask in
         if cache.cache.(hash1) = slot
@@ -66,8 +65,8 @@ module Writer = struct
           let bucket =
             if cache.cache_date.(hash1) < cache.cache_date.(hash2) then hash1 else hash2
           in
-          (* Printf.printf "miss %05d %016x\n%!"
-               bucket slot; (*" %016x\n%!" bucket slot;*) *)
+          (* Printf.printf "miss %05d %016x\n%!" bucket slot; (*" %016x\n%!" bucket
+             slot;*) *)
           cache.cache.(bucket) <- slot;
           cache.cache_date.(bucket) <- alloc_id;
           cache.cache_next.(predictor) <- bucket;
@@ -198,10 +197,10 @@ module Reader = struct
       cache.last_backtrace_len <- pos;
       bbuf, pos)
     else (
-      (* This can occur if the last backtrace was truncated, and the current
-         backtrace shares a long prefix with it. Return the amount of backtrace
-         that we have. (We still go through the motions of decoding to ensure
-         that the location cache is updated correctly) *)
+      (* This can occur if the last backtrace was truncated, and the current backtrace
+         shares a long prefix with it. Return the amount of backtrace that we have. (We
+         still go through the motions of decoding to ensure that the location cache is
+         updated correctly) *)
       let _bbuf, _pos = decode 0 [||] 0 nencoded in
       cache.last_backtrace, cache.last_backtrace_len)
   ;;

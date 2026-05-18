@@ -16,12 +16,11 @@ let make ?(rand = default_rand ()) ~sampling_rate () =
 
 let copy ?(rand = default_rand ()) t = { rand; one_log1m_lambda = t.one_log1m_lambda }
 
-(* port of log_approx in runtime/memprof.c to OCaml
-   see https://github.com/ocaml/ocaml/pull/9466
+(* port of log_approx in runtime/memprof.c to OCaml see
+   https://github.com/ocaml/ocaml/pull/9466
 
-   slightly different results because of double precision,
-   however, this difference is ~100x smaller than the
-   error introduced by the original approximation *)
+   slightly different results because of double precision, however, this difference is
+   ~100x smaller than the error introduced by the original approximation *)
 
 let log_approx n =
   let f = Int64.bits_of_float Int32.(to_float (add one (shift_left n 1))) in
