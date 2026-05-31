@@ -1115,7 +1115,17 @@ module Reader = struct
   ;;
 
   let iter = iter
-  let open_ ~filename = make_reader (Unix.openfile filename [ Unix.O_RDONLY ] 0)
+
+  let open_ ~filename =
+    let fd = Unix.openfile filename [ Unix.O_RDONLY ] 0 in
+    match make_reader fd with
+    | reader -> reader
+    | exception exn ->
+      (try Unix.close fd with
+       | (_ : exn) -> ());
+      raise exn
+  ;;
+
   let size_bytes s = (Unix.LargeFile.fstat s.fd).st_size
   let close s = Unix.close s.fd
 end
