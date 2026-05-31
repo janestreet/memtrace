@@ -32,11 +32,12 @@ module Shared_writer_fd = struct
 
   let close t =
     Mutex.lock t.lock;
-    Atomic.set t.closed true;
-    try Unix.close t.fd with
-    | (_ : exn) ->
-      ();
-      Mutex.unlock t.lock
+    Fun.protect
+      (fun () ->
+        Atomic.set t.closed true;
+        try Unix.close t.fd with
+        | (_ : exn) -> ())
+      ~finally:(fun () -> Mutex.unlock t.lock)
   ;;
 end
 
