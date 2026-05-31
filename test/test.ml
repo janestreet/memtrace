@@ -197,5 +197,18 @@ let test_failure () =
   if not (Atomic.get got_epipe) then failwith "should have failed"
 ;;
 
+let test_close_unlocks_shared_writer () =
+  with_temp
+  @@ fun fd ->
+  let shared = Memtrace__Buf.Shared_writer_fd.make fd in
+  Memtrace__Buf.Shared_writer_fd.close shared;
+  match
+    Memtrace__Buf.Shared_writer_fd.write_fully shared (Bytes.create 0) ~pos:0 ~len:0
+  with
+  | () -> failwith "write after close should fail"
+  | exception Memtrace__Buf.Shared_writer_fd.Closed -> ()
+;;
+
 let () = test ()
 let () = test_failure ()
+let () = test_close_unlocks_shared_writer ()
