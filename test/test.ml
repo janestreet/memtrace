@@ -197,5 +197,26 @@ let test_failure () =
   if not (Atomic.get got_epipe) then failwith "should have failed"
 ;;
 
+let test_reader_open_failure_closes_fd () =
+  if Sys.file_exists "/proc/self/fd"
+  then (
+    let filename = Filename.temp_file "memtrace" "invalid-ctf" in
+    Fun.protect
+      ~finally:(fun () -> if Sys.file_exists filename then Unix.unlink filename)
+      (fun () ->
+        let count_open_file_descriptors () = Array.length (Sys.readdir "/proc/self/fd") in
+        let before = count_open_file_descriptors () in
+        for _i = 1 to 10 do
+          match Reader.open_ ~filename with
+          | reader ->
+            Reader.close reader;
+            failwith "empty trace should not open"
+          | exception _ -> ()
+        done;
+        let after = count_open_file_descriptors () in
+        if before <> after then failwith "Reader.open_ leaked file descriptors"))
+;;
+
 let () = test ()
 let () = test_failure ()
+let () = test_reader_open_failure_closes_fd ()
