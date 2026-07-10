@@ -22,18 +22,17 @@ val trace_if_requested
   -> unit
   -> unit
 
-(** Tracing can also be manually started and stopped. *)
-type tracer
-
 (** Manually start tracing. *)
 val start_tracing
   :  context:string option
   -> sampling_rate:float
   -> filename:string
-  -> tracer
+  -> unit
 
-(** Manually stop tracing *)
-val stop_tracing : tracer -> unit
+(** Manually stop tracing.
+
+    This function does nothing if tracing is not in progress. *)
+val stop_tracing : unit -> unit
 
 (** Is there an active trace running at the moment? *)
 val currently_tracing : unit -> bool
@@ -49,7 +48,8 @@ module Memprof_tracer = Memprof_tracer
 
 (** Use External to track non-GC-heap allocations in a Memtrace trace *)
 module External : sig
-  type token [@@immediate]
+  (** tokens are immediate, but not portable *)
+  type token
 
   (** [alloc ~bytes] reports an allocation of a given number of bytes.
 
@@ -59,8 +59,13 @@ module External : sig
       This function is very fast in the common case where it returns [Null] *)
   val alloc : bytes:int -> token or_null
 
+  (** This function can be safely called from finalizers and signal handlers *)
   val free : token -> unit
 end
+
+(** Memtrace has a global singleton tracer, and this type is defined purely for
+    compatibility *)
+type tracer = unit
 
 (** (For testing) *)
 module Geometric_sampler = Geometric_sampler

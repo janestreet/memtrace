@@ -1,13 +1,20 @@
+open Stdlib_shim
+
 type write_fn = Unix.file_descr -> bytes -> int -> int -> int
 
 module Shared_writer_fd = struct
-  type t =
-    { lock : Mutex.t
-    ; closed : bool Atomic.t
+  type t' =
+    { mutable closed : bool
     ; fd : Unix.file_descr
     }
 
-  let make fd = { lock = Mutex.create (); closed = Atomic.make false; fd }
+  type t = t' Lock.t
+
+  let make fd =
+    Lock.create
+      ~on_error:(fun _ _ -> assert false (* We never raise holding this lock *))
+      (fun () -> { closed = false; fd })
+  ;;
 
   exception Closed
 
@@ -22,21 +29,45 @@ module Shared_writer_fd = struct
   let default_write fd buf pos len = Unix.write fd buf pos len
 
   let write_fully ?(write = default_write) t buf ~pos ~len =
-    Mutex.lock t.lock;
-    Fun.protect
-      (fun () ->
-        if Atomic.get t.closed then raise Closed;
-        do_write_fully write t.fd buf ~pos ~len)
-      ~finally:(fun () -> Mutex.unlock t.lock)
+    let res =
+      match
+        Lock.try_lock t ~f:(fun t ->
+          if t.closed
+          then Error Closed
+          else (
+            match do_write_fully write t.fd (Obj.magic_uncontended buf) ~pos ~len with
+            | () -> Ok ()
+            | exception exn -> Error exn))
+      with
+      | Some v -> v
+      | None ->
+        (* We didn't manage to take the lock synchronously, so defer the write. However,
+           by the time we get the lock the buffer might be reused, so take a copy of the
+           data to write. *)
+        let buf = Bytes.sub buf pos len in
+        Lock.with_lock_deferred t ~f:(fun t ->
+          if t.closed
+          then ()
+          else (
+            try do_write_fully write t.fd (Obj.magic_uncontended buf) ~pos:0 ~len with
+            | _ ->
+              (* Nowhere for this to go! But there's another write in progress, and that
+                 one will likely fail too. *)
+              ()));
+        Ok ()
+    in
+    match res with
+    | Ok () -> ()
+    | Error exn -> raise exn
   ;;
 
   let close t =
-    Mutex.lock t.lock;
-    Atomic.set t.closed true;
-    try Unix.close t.fd with
-    | (_ : exn) ->
-      ();
-      Mutex.unlock t.lock
+    Lock.with_lock_deferred t ~f:(fun t ->
+      if not t.closed
+      then (
+        t.closed <- true;
+        try Unix.close t.fd with
+        | (_ : exn) -> ()))
   ;;
 end
 
