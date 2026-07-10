@@ -1,9 +1,8 @@
 (executables
  (modes byte exe)
- (names test copy trace geom_sampler fork)
- (libraries memtrace unix)
- (preprocess
-  (pps ppx_jane)))
+ (names test copy trace geom_sampler fork soak)
+ (libraries memtrace unix threads)
+ (preprocess no_preprocessing))
 
 (rule
  (deps test.exe)

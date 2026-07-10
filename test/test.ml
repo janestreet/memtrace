@@ -173,15 +173,14 @@ let test () =
 let test_failure () =
   with_temp
   @@ fun fd ->
-  let w = Writer.create fd info in
   let got_epipe = Atomic.make false in
   let report_exn @ portable = function
     | Unix.Unix_error (Unix.EPIPE, "write", _) -> Atomic.set got_epipe true
     | e -> raise e
   in
-  let t = Memtrace.Memprof_tracer.start ~report_exn ~sampling_rate:0.2 w in
+  let t = Memtrace.Memprof_tracer.start ~report_exn ~sampling_rate:0.2 ~fd ~info () in
   for _i = 1 to 50000 do
-    let _ : int ref = Sys.opaque_identity (ref 42) in
+    let _ : int ref @ global = Sys.opaque_identity (ref 42) in
     ()
   done;
   let rd, wr = Unix.pipe () in
@@ -190,12 +189,91 @@ let test_failure () =
   Unix.dup2 wr fd;
   Unix.close wr;
   for _i = 1 to 50000 do
-    let _ : int ref = Sys.opaque_identity (ref 42) in
+    let _ : int ref @ global = Sys.opaque_identity (ref 42) in
     ()
   done;
   Memtrace.Memprof_tracer.stop t;
   if not (Atomic.get got_epipe) then failwith "should have failed"
 ;;
 
-let () = test ()
-let () = test_failure ()
+let test_flush () =
+  with_temp
+  @@ fun fd ->
+  let curr_size () = (Unix.fstat fd).st_size in
+  let w = Writer.create fd info in
+  let decode_loc l = locations.((l : Location_code.t :> int) - 1) in
+  let hdr_size = curr_size () in
+  let _obj : Obj_id.t =
+    Writer.put_alloc
+      w
+      info.start_time
+      ~length:3
+      ~nsamples:1
+      ~source:Major
+      ~callstack:[| loc 0; loc 1; loc 2 |]
+      ~decode_callstack_entry:decode_loc
+  in
+  assert (curr_size () = hdr_size);
+  Writer.flush w;
+  let sz = curr_size () in
+  assert (sz > hdr_size);
+  (* file grew on first flush *)
+  for _i = 1 to 10 do
+    Writer.flush w;
+    assert (curr_size () = sz) (* file didn't grow on repeated flush *)
+  done
+;;
+
+let test_fd_close_on_error () =
+  let rd, wr = Unix.pipe () in
+  Unix.set_nonblock rd;
+  let finished = Atomic.make false in
+  let discarder =
+    ()
+    |> Thread.create (fun () ->
+      (* Loop until the write end of the pipe is closed (so read returns EOF) *)
+      let rec loop () =
+        let is_finished = Atomic.get finished in
+        match Unix.select [ rd ] [] [ rd ] 0.1 with
+        | [], [], [] ->
+          if is_finished then failwith "Finished but FD hanging - write end not closed?";
+          loop ()
+        | _ ->
+          (match Unix.read rd (Bytes.make 1000 '0') 0 1000 with
+           | 0 -> () (* EOF *)
+           | _ -> loop ()
+           | exception Unix.Unix_error ((EWOULDBLOCK | EAGAIN | EINTR), _, _) -> loop ())
+      in
+      loop ())
+  in
+  let bytes_written = Atomic.make 0 in
+  let max_written = 1_000_000 in
+  let exception Simulated_io_failure in
+  let write fd buf off len =
+    let written = len + Atomic.fetch_and_add bytes_written len in
+    if written > max_written then raise Simulated_io_failure;
+    Unix.write fd buf off len
+  in
+  let report_exn = function
+    | Simulated_io_failure -> ()
+    | e -> raise e
+  in
+  Memtrace.Memprof_tracer.start ~report_exn ~sampling_rate:0.1 ~fd:wr ~write ~info ();
+  while Atomic.get bytes_written <= max_written do
+    let _ : int ref @ global = Sys.opaque_identity (ref 42) in
+    ()
+  done;
+  (* Simulated_io_failure should have killed the tracer by now *)
+  assert (not (Memtrace.Memprof_tracer.active_tracer ()));
+  Atomic.set finished true;
+  Thread.join discarder
+;;
+
+let () =
+  for _ = 1 to 3 do
+    test ();
+    test_failure ();
+    test_flush ();
+    test_fd_close_on_error ()
+  done
+;;

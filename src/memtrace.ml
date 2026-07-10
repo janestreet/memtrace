@@ -1,14 +1,14 @@
-type tracer = Memprof_tracer.t
+type tracer = unit
 
 let getpid64 () = Int64.of_int (Unix.getpid ())
 
 let start_tracing ~if_started ~context ~sampling_rate ~filename =
-  match Memprof_tracer.active_tracer () with
-  | Some tracer ->
-    (match if_started with
-     | `Fail -> failwith "Only one Memtrace instance may be active at a time"
-     | `Ignore -> tracer)
-  | None ->
+  if Memprof_tracer.active_tracer ()
+  then (
+    match if_started with
+    | `Fail -> failwith "Only one Memtrace instance may be active at a time"
+    | `Ignore -> ())
+  else (
     let fd =
       try Unix.openfile filename Unix.[ O_CREAT; O_WRONLY ] 0o600 with
       | Unix.Unix_error (err, _, _) ->
@@ -39,25 +39,12 @@ let start_tracing ~if_started ~context ~sampling_rate ~filename =
       ; context
       }
     in
-    let trace = Trace.Writer.create fd ~getpid:getpid64 info in
-    Memprof_tracer.start ~sampling_rate trace
+    Memprof_tracer.start ~sampling_rate ~fd ~getpid:getpid64 ~info ())
 ;;
 
-let stop_tracing t = Memprof_tracer.stop t
-
-let () =
-  at_exit (fun () ->
-    match Memprof_tracer.active_tracer () with
-    | Some s -> stop_tracing s
-    | None -> ())
-;;
-
-let currently_tracing () =
-  match Memprof_tracer.active_tracer () with
-  | Some _ -> true
-  | None -> false
-;;
-
+let stop_tracing () = Memprof_tracer.stop ()
+let () = at_exit Memprof_tracer.stop
+let currently_tracing () = Memprof_tracer.active_tracer ()
 let default_sampling_rate = 1e-5
 
 let trace_if_requested ?(if_started = `Ignore) ?context ?sampling_rate () =

@@ -1,6 +1,6 @@
 @@ portable
 
-type write_fn = Unix.file_descr -> bytes -> int -> int -> int
+type write_fn = Unix.file_descr -> bytes @ local -> int -> int -> int
 
 module Shared_writer_fd : sig
   (** A Unix file descriptor, shared between multiple writers *)
@@ -15,7 +15,7 @@ module Shared_writer_fd : sig
 
       The optional [write] parameter allows customizing how bytes are written (default:
       [Unix.write]). *)
-  val write_fully : ?write:write_fn -> t -> bytes -> pos:int -> len:int -> unit
+  val write_fully : ?write:write_fn @ portable -> t -> bytes -> pos:int -> len:int -> unit
 
   val close : t -> unit
 end
@@ -41,7 +41,7 @@ module Write : sig
 
       The optional [write] parameter allows customizing how bytes are written (default:
       [Unix.write]). *)
-  val write_fd : ?write:write_fn -> Shared_writer_fd.t -> t -> unit
+  val write_fd : ?write:write_fn @ portable -> Shared_writer_fd.t -> t -> unit
 
   (** Writing to a buf. All types are written little-endian. All functions raise Overflow
       if there is insufficient space remaining *)

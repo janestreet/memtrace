@@ -10,8 +10,12 @@ let test_fork ~quick_exit () =
    | 0 ->
      let count = if quick_exit then 1 else 1000000 in
      for _i = 1 to count do
-       ignore (Sys.opaque_identity Array.make alloc_child "a" : string array)
+       ignore (Sys.opaque_identity Array.make alloc_child "a" : string array);
+       match Memtrace.External.alloc ~bytes:(alloc_child * Sys.word_size / 8) with
+       | Null -> ()
+       | This t -> Memtrace.External.free t
      done;
+     if not quick_exit then assert (not (Memtrace.currently_tracing ()));
      exit 0
    | pid ->
      (match Unix.waitpid [] pid with

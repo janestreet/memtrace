@@ -15,7 +15,7 @@ module Writer : sig
     -> callstack:int array
     -> callstack_pos:int
     -> callstack_len:int
-    -> log_new_location:(index:int -> unit)
+    -> log_new_location:(index:int -> unit) @ local
     -> int (* number of encoded slots *)
 
   val put_cache_verifier : t -> Buf.Write.t -> unit

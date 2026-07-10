@@ -102,7 +102,7 @@ module Writer = struct
           put_hit b orig_hit ncorrect;
           code_no_prediction predictor pos ncodes))
     in
-    code_no_prediction 0 (callstack_len - 1) 0
+    code_no_prediction 0 (callstack_len - 1) 0 [@nontail]
   ;;
 
   let put_cache_verifier cache b =

@@ -49,6 +49,10 @@ module Obj_id : sig
 
   (** For convenience, a hashtable keyed by object ID *)
   module Tbl : Hashtbl.SeededS with type key = t
+
+  module Expert : sig
+    val of_int : int -> t
+  end
 end
 
 (** Identifiers to represent domains *)
@@ -148,7 +152,7 @@ module Writer : sig
 
   exception Pid_changed
 
-  type write_fn := Unix.file_descr -> bytes -> int -> int -> int
+  type write_fn := Unix.file_descr -> bytes @ local -> int -> int -> int
 
   (** Create a trace writer. The optional [write] parameter allows customizing how bytes
       are written to the fd. The [write] function must be portable. *)
@@ -160,7 +164,15 @@ module Writer : sig
     -> t
 
   val domain : t -> Domain_id.t
-  val for_domain : t -> (domain:Domain_id.t -> t) @ portable
+
+  (** [for_domain], [flush] and [put_*] raise Closed if [close] has been called *)
+  exception Closed
+
+  val for_domain_at_time
+    :  t @ contended
+    -> start_time:Timestamp.t
+    -> domain:Domain_id.t
+    -> t
 
   (** All of the functions below may raise Unix_error if writing to the file descriptor
       fails, or Pid_changed if getpid returns a different value. *)
@@ -201,8 +213,22 @@ module Writer : sig
       may be written after flush. *)
   val flush : t -> unit
 
-  (** Flushes and closes the underlying [file_descr] *)
-  val close : t -> unit
+  (** Returns whether there is anything to flush. If [needs_flush t = false], then
+      [flush t] is a no-op. *)
+  val needs_flush : t -> bool
+
+  (** Flushes and closes the underlying [file_descr].
+
+      Returns an upper bound on the number of objects in this trace. That is, the integer
+      value of every Obj_id.t in the trace will be less than the return value of [close].
+
+      NB: Writers for other domains created with [for_domain] are not flushed by [close]:
+      any unflushed buffered data they contain is lost. *)
+  val close : t -> int
+
+  (** Returns bool if [close] has been called on this writer, or on any that share its
+      underlying stream (i.e. those created by [for_domain] *)
+  val is_closed : t -> bool
 
   module Multiplexed_domains : sig
     (** A set of per-domain [Writer.t]s, allowing events from different domains to be

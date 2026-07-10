@@ -37,8 +37,8 @@ let dump filename =
         | ls -> ls |> List.iter (Printf.printf " %a" print_location)
       done;
       Printf.printf "\n%!"
-    | Promote (id, _) -> Printf.printf "%010d promote\n" (id :> int)
-    | Collect (id, _) -> Printf.printf "%010d collect\n" (id :> int));
+    | Promote (id, dom) -> Printf.printf "%010d promote dom=%d\n" (id :> int) (dom :> int)
+    | Collect (id, dom) -> Printf.printf "%010d collect dom=%d\n" (id :> int) (dom :> int));
   Reader.close trace
 ;;
 
