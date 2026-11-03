@@ -12,15 +12,6 @@ external ( == )
   @@ portable
   = "%eq"
 
-module Atomic = struct
-  include Atomic
-
-  (* Atomic.make_contended is provided but broken on runtime4 builds of oxcaml *)
-  external runtime5 : unit -> bool @@ portable = "%runtime5"
-
-  let make_contended = if runtime5 () then make_contended else make
-end
-
 module Domain = struct
   let[@ocaml.warning "-32"] max_domain_count = 1024
 

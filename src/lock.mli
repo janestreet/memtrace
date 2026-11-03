@@ -39,7 +39,10 @@ val try_lock
 
     This function can safely be used from within an asynchronous context (e.g. signal
     handler or memprof callback), as it will not block if the lock is held by the current
-    thread. *)
+    thread.
+
+    Any exceptions raised by [f] poison the lock and are reported via [on_error], but are
+    not propagated. *)
 val with_lock_deferred : f:('a -> unit @ portable) @ portable unyielding -> 'a t -> unit
 
 (** Same as [with_lock_blocking], except that the lock is left poisoned afterwards *)

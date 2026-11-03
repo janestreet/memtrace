@@ -51,8 +51,7 @@ module Memprof_tracer = Memprof_tracer
 
 (** Use External to track non-GC-heap allocations in a Memtrace trace *)
 module External : sig
-  (** tokens are immediate, but not portable *)
-  type token : value mod contended external_ global immutable non_float
+  type token : immediate
 
   (** [alloc ~bytes] reports an allocation of a given number of bytes.
 

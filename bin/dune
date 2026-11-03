@@ -3,4 +3,4 @@
  (names dump_trace identify subsample flamegraph hotspots strip_names)
  (libraries memtrace unix)
  (preprocess
-  (pps ppx_jane)))
+  (pps ppx_jane -compare-require-explicit-locality)))
