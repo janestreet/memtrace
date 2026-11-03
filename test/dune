@@ -1,25 +1,31 @@
 (executables
  (modes byte exe)
- (names test copy trace geom_sampler fork soak)
+ (names test copy trace geom_sampler fork soak lock_test)
  (libraries memtrace unix threads)
  (preprocess no_preprocessing))
 
 (rule
  (deps test.exe)
  (action
-  (run ./test.exe))
+  (bash ./test.exe))
+ (alias runtest))
+
+(rule
+ (deps lock_test.exe)
+ (action
+  (bash ./lock_test.exe))
  (alias runtest))
 
 (rule
  (deps trace.exe)
  (action
-  (run ./trace.exe))
+  (bash ./trace.exe))
  (alias runtest))
 
 (rule
  (deps fork.exe)
  (action
-  (run ./fork.exe))
+  (bash ./fork.exe))
  (alias runtest))
 
 (rule
@@ -32,7 +38,7 @@
  (targets ocamlopt.ctf.copy)
  (deps copy.exe ocamlopt.ctf)
  (action
-  (run ./copy.exe ocamlopt.ctf ocamlopt.ctf.copy)))
+  (bash "./copy.exe ocamlopt.ctf ocamlopt.ctf.copy")))
 
 (rule
  (targets ocamlopt.ctf.txt)

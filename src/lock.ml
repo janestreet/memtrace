@@ -60,8 +60,9 @@ and run_deferred ~lock : _ -> unit = function
   | f :: defers ->
     (match apply_locked ~f ~lock with
      | exception exn ->
-       poison_lock ~lock exn;
-       raise Stopped
+       (* Note we do not raise [Stopped] here; this may be run from within a memprof
+          callback, which must not raise. *)
+       poison_lock ~lock exn
      | () -> run_deferred ~lock defers)
 ;;
 
